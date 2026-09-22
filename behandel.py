@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-"""
-Behandling af ét work item med en Insubiz-skade.
+"""Behandling af ét work item med en Insubiz-skade.
 
-Skaden afsluttes kun, når begge krav er opfyldt:
-
-1. easy.compensation.id er 0.
-2. accidentDuration.text er
-   "Uarbejdsdygtighed mindre end 1 dag".
+Alle procesinputs og konfigurerbare værdier importeres fra config.py.
+Denne fil læser intet fra .env, miljøvariabler eller andre lokale
+konfigurationskilder.
 
 Hvis begge krav er opfyldt:
 
@@ -17,26 +14,38 @@ Hvis begge krav er opfyldt:
 Hvis et eller begge krav ikke er opfyldt:
 
 - Skaden ændres ikke i Insubiz.
-- Der sendes en mail om manuel behandling.
+- Der sendes en mail til forsikringsteamet.
 - Work itemets status sættes til "Manuel".
 - Der registreres én 1.0-state med årsagen.
 - Der tilføjes ingen ekstra felter i box.
-
-Mailafsender og mailmodtager hentes fra .env via:
-
-    mailafsender
-    mailmodtager
 """
 
 import logging
-import os
 from typing import Any
 
 from automation_server_client import WorkItemError
-from dotenv import load_dotenv
 from playwright.async_api import Page
 from q_outlook_api.functionality.mail_api import send_mail
 
+from config import (
+    AFSLUTTENDE_STATES,
+    FORVENTET_ACCIDENT_DURATION_TEXT,
+    FORVENTET_COMPENSATION_ID,
+    MAILAFSENDER,
+    MAILMODTAGER,
+    MAIL_EMNE_PREFIX,
+    MAILTEKST_BEGGE_KRAV,
+    MAILTEKST_COMPENSATION,
+    MAILTEKST_UARBEJDSDYGTIGHED,
+    SKADE_ID_FELTER,
+    SKADE_NR_FELTER,
+    STATE_AFSLUT_SKADE,
+    STATE_MANUEL_BEGGE_KRAV,
+    STATE_MANUEL_COMPENSATION,
+    STATE_MANUEL_UARBEJDSDYGTIGHED,
+    STATUS_CODE_MANUEL,
+    STATUS_MANUEL,
+)
 from q_haderslev_vbo.automation_server.ats_update_item_data import (
     update_item_data,
 )
@@ -49,82 +58,13 @@ from q_insubiz.functionality.skader import (
 from q_insubiz.models import SkadeStatus
 
 
-load_dotenv()
-
 logger = logging.getLogger(__name__)
-
-
-# ------------------------------------------------------------
-# FORRETNINGSREGLER
-# ------------------------------------------------------------
-
-FORVENTET_COMPENSATION_ID = 0
-
-FORVENTET_ACCIDENT_DURATION_TEXT = (
-    "Uarbejdsdygtighed mindre end 1 dag"
-)
-
-
-# ------------------------------------------------------------
-# MILJØVARIABLER
-# ------------------------------------------------------------
-
-ENV_MAILAFSENDER = "mailafsender"
-ENV_MAILMODTAGER = "mailmodtager"
-
-
-# ------------------------------------------------------------
-# WORK ITEM-FELTER
-# ------------------------------------------------------------
-
-SKADE_ID_BOX_FELTER = (
-    "Skade_id",
-    "skade_id",
-    "Skade id",
-    "Skade-id",
-)
-
-SKADE_NR_BOX_FELTER = (
-    "Skade_nr",
-    "skade_nr",
-    "Skade nr",
-    "Skade-nr",
-)
-
-
-# ------------------------------------------------------------
-# STATES
-# ------------------------------------------------------------
-
-class States:
-    """Afsluttende states for behandlingen."""
-
-    AFSLUT_SKADE = "1.0 Skade afsluttet"
-
-    MANUEL_COMPENSATION = (
-        "1.0 Manuel - Vurderes efter arbejdsskadeloven = Ja"
-    )
-
-    MANUEL_UARBEJDSDYGTIGHED = (
-        "1.0 Manuel - Uarbejdsdygtighed er ikke mindre end 1 dag"
-    )
-
-    MANUEL_BEGGE_KRAV = (
-        "1.0 Manuel - Begge krav er ikke opfyldt"
-    )
-
-
-AFSLUTTENDE_STATES = (
-    States.AFSLUT_SKADE,
-    States.MANUEL_COMPENSATION,
-    States.MANUEL_UARBEJDSDYGTIGHED,
-    States.MANUEL_BEGGE_KRAV,
-)
 
 
 # ------------------------------------------------------------
 # PUBLIC BEHANDLINGSFUNKTION
 # ------------------------------------------------------------
+
 
 async def behandel_page(
     item: Any,
@@ -159,12 +99,11 @@ async def behandel_page(
         print()
         print("=" * 80)
         print(f"Skade-id: {skade_id}")
+        print(f"Skade-nr.: {skade_nr}")
         print("SKIP: Itemet har allerede en afsluttende 1.0-state")
         print("=" * 80)
         print()
         return
-
-    mailafsender, mailmodtager = _hent_mailkonfiguration()
 
     print()
     print("=" * 80)
@@ -185,10 +124,8 @@ async def behandel_page(
             skade=skade,
         )
 
-        accident_duration_text = (
-            _hent_accident_duration_text(
-                skade=skade,
-            )
+        accident_duration_text = _hent_accident_duration_text(
+            skade=skade,
         )
 
         compensation_opfyldt = (
@@ -207,43 +144,32 @@ async def behandel_page(
 
         _print_kontrolresultat(
             compensation_id=compensation_id,
-            compensation_opfyldt=(
-                compensation_opfyldt
-            ),
-            accident_duration_text=(
-                accident_duration_text
-            ),
-            accident_duration_opfyldt=(
-                accident_duration_opfyldt
-            ),
+            compensation_opfyldt=compensation_opfyldt,
+            accident_duration_text=accident_duration_text,
+            accident_duration_opfyldt=accident_duration_opfyldt,
         )
 
         if not (
             compensation_opfyldt
             and accident_duration_opfyldt
         ):
-            manuel_state = _bestem_manuel_state(
-                compensation_opfyldt=(
-                    compensation_opfyldt
-                ),
+            manuel_state, mailtekst = _bestem_manuel_resultat(
+                compensation_opfyldt=compensation_opfyldt,
                 accident_duration_opfyldt=(
                     accident_duration_opfyldt
                 ),
             )
 
             _send_mail_om_manuel_behandling(
-                mailafsender=mailafsender,
-                mailmodtager=mailmodtager,
-                skade_id=skade_id,
                 skade_nr=skade_nr,
-                state=manuel_state,
+                mailtekst=mailtekst,
             )
 
             update_item_data(
                 data,
                 item=item,
-                status="Manuel",
-                status_code="Manuel",
+                status=STATUS_MANUEL,
+                status_code=STATUS_CODE_MANUEL,
                 state=manuel_state,
             )
 
@@ -252,15 +178,22 @@ async def behandel_page(
                 "sendes til MANUEL behandling"
             )
             print(f"State: {manuel_state}")
-            print("Status: Manuel")
+            print(f"Status: {STATUS_MANUEL}")
             print("Mail: Sendt")
             print("=" * 80)
             print()
+
+            logger.info(
+                "Skaden er overdraget til manuel behandling. "
+                "Skade-id: %s. Skade-nr.: %s. State: %s.",
+                skade_id,
+                skade_nr,
+                manuel_state,
+            )
             return
 
         print(
-            f"BESLUTNING: Skade {skade_id} "
-            "afsluttes"
+            f"BESLUTNING: Skade {skade_id} afsluttes"
         )
         print("Årsag: Begge krav er opfyldt.")
         print("=" * 80)
@@ -298,7 +231,7 @@ async def behandel_page(
         update_item_data(
             data,
             item=item,
-            state=States.AFSLUT_SKADE,
+            state=STATE_AFSLUT_SKADE,
         )
 
         print(
@@ -306,16 +239,16 @@ async def behandel_page(
             f"status-id er {status_id}"
         )
         print(
-            f"RESULTAT: Skade {skade_id} "
-            "er afsluttet"
+            f"RESULTAT: Skade {skade_id} er afsluttet"
         )
         print("=" * 80)
         print()
 
         logger.info(
             "Skaden er afsluttet og state er sat. "
-            "Skade-id: %s.",
+            "Skade-id: %s. Skade-nr.: %s.",
             skade_id,
+            skade_nr,
         )
 
     finally:
@@ -323,112 +256,80 @@ async def behandel_page(
 
 
 # ------------------------------------------------------------
-# MAIL
+# MANUEL BEHANDLING OG MAIL
 # ------------------------------------------------------------
 
-def _send_mail_om_manuel_behandling(
-    *,
-    mailafsender: str,
-    mailmodtager: str,
-    skade_id: int,
-    skade_nr: str,
-    state: str,
-) -> None:
-    """Sender mail om manuel behandling via q_outlook_api."""
-    mail = {
-        "subject": (
-            "Manuel behandling af skade "
-            f"{skade_nr}"
-        ),
-        "body": (
-            "Følgende skade kræver manuel behandling.\n\n"
-            f"Skade-id: {skade_id}\n"
-            f"Skade-nr.: {skade_nr}\n"
-            f"Årsag: {state}"
-        ),
-        "to": [mailmodtager],
-        "cc": [],
-        "bcc": [],
-    }
 
-    send_mail(
-        mailafsender,
-        mail,
-    )
-
-    logger.info(
-        "Mail om manuel behandling blev sendt. "
-        "Skade-id: %s. Skade-nr.: %s.",
-        skade_id,
-        skade_nr,
-    )
-
-
-# ------------------------------------------------------------
-# MANUEL BEHANDLING
-# ------------------------------------------------------------
-
-def _bestem_manuel_state(
+def _bestem_manuel_resultat(
     *,
     compensation_opfyldt: bool,
     accident_duration_opfyldt: bool,
-) -> str:
-    """Returnerer den ene state, der forklarer manuel behandling."""
+) -> tuple[str, str]:
+    """Returnerer state og mailtekst til manuel behandling."""
     if (
         not compensation_opfyldt
         and not accident_duration_opfyldt
     ):
-        return States.MANUEL_BEGGE_KRAV
+        return (
+            STATE_MANUEL_BEGGE_KRAV,
+            MAILTEKST_BEGGE_KRAV,
+        )
 
     if not compensation_opfyldt:
-        return States.MANUEL_COMPENSATION
-
-    return States.MANUEL_UARBEJDSDYGTIGHED
-
-
-# ------------------------------------------------------------
-# MILJØVARIABLER
-# ------------------------------------------------------------
-
-def _hent_miljoevaerdi(
-    *,
-    name: str,
-) -> str:
-    """Henter en obligatorisk værdi fra miljøet eller .env."""
-    value = os.getenv(name)
-
-    if value is None:
-        raise WorkItemError(
-            "Den obligatoriske miljøvariabel "
-            f"{name!r} mangler."
+        return (
+            STATE_MANUEL_COMPENSATION,
+            MAILTEKST_COMPENSATION,
         )
 
-    normalized_value = value.strip()
-
-    if not normalized_value:
-        raise WorkItemError(
-            "Den obligatoriske miljøvariabel "
-            f"{name!r} er tom."
-        )
-
-    return normalized_value
-
-
-def _hent_mailkonfiguration() -> tuple[str, str]:
-    """Henter mailafsender og mailmodtager fra .env."""
     return (
-        _hent_miljoevaerdi(
-            name=ENV_MAILAFSENDER,
-        ),
-        _hent_miljoevaerdi(
-            name=ENV_MAILMODTAGER,
-        ),
+        STATE_MANUEL_UARBEJDSDYGTIGHED,
+        MAILTEKST_UARBEJDSDYGTIGHED,
+    )
+
+
+def _send_mail_om_manuel_behandling(
+    *,
+    skade_nr: str,
+    mailtekst: str,
+) -> None:
+    """Sender mail via q_outlook_api med værdier fra config.py."""
+    mail = {
+        "subject": f"{MAIL_EMNE_PREFIX}: {skade_nr}",
+        "body": mailtekst,
+        "to": [MAILMODTAGER],
+        "cc": [],
+        "bcc": [],
+    }
+
+    try:
+        send_mail(
+            MAILAFSENDER,
+            mail,
+        )
+    except Exception as error:
+        logger.exception(
+            "Mail om manuel behandling kunne ikke sendes. "
+            "Skade-nr.: %s.",
+            skade_nr,
+        )
+
+        raise WorkItemError(
+            "Mail om manuel behandling kunne ikke sendes. "
+            f"Skade-nr.: {skade_nr}. "
+            f"Fejl: {type(error).__name__}: {error}"
+        ) from error
+
+    logger.info(
+        "Mail om manuel behandling blev sendt. "
+        "Skade-nr.: %s.",
+        skade_nr,
     )
 
 
 # ------------------------------------------------------------
 # TERMINALUDSKRIFT
 # ------------------------------------------------------------
+
 
 def _print_kontrolresultat(
     *,
@@ -482,6 +383,7 @@ def _print_kontrolresultat(
 # STATE
 # ------------------------------------------------------------
 
+
 def _har_afsluttende_state(
     *,
     data: dict[str, Any],
@@ -512,6 +414,7 @@ def _har_afsluttende_state(
 # WORK ITEM-DATA
 # ------------------------------------------------------------
 
+
 def _hent_box(
     *,
     data: dict[str, Any],
@@ -535,7 +438,7 @@ def _hent_skade_id_fra_box(
     """Henter og validerer skade-id fra box."""
     faktisk_feltnavn = _find_box_feltnavn(
         box=box,
-        feltnavne=SKADE_ID_BOX_FELTER,
+        feltnavne=SKADE_ID_FELTER,
     )
 
     if faktisk_feltnavn is None:
@@ -566,7 +469,7 @@ def _hent_skade_nr_fra_box(
     """Henter skadens læsevenlige nummer fra box."""
     faktisk_feltnavn = _find_box_feltnavn(
         box=box,
-        feltnavne=SKADE_NR_BOX_FELTER,
+        feltnavne=SKADE_NR_FELTER,
     )
 
     if faktisk_feltnavn is None:
@@ -593,7 +496,7 @@ def _find_box_feltnavn(
     box: dict[str, Any],
     feltnavne: tuple[str, ...],
 ) -> str | None:
-    """Finder et box-feltnavn via kendte aliaser."""
+    """Finder et box-feltnavn via kendte aliaser fra config.py."""
     normaliserede_felter = {
         _normaliser_feltnavn(field_name): field_name
         for field_name in box
@@ -614,6 +517,7 @@ def _find_box_feltnavn(
 # ------------------------------------------------------------
 # INSUBIZ-FELTER
 # ------------------------------------------------------------
+
 
 def _hent_compensation_id(
     *,
@@ -692,10 +596,8 @@ def _hent_accident_duration_text(
                     "en dictionary."
                 )
 
-            accident_duration = (
-                personal_injury.get(
-                    "accidentDuration"
-                )
+            accident_duration = personal_injury.get(
+                "accidentDuration"
             )
 
     if accident_duration is None:
@@ -760,6 +662,7 @@ def _hent_status_id(
 # ------------------------------------------------------------
 # GENERELLE HJÆLPERE
 # ------------------------------------------------------------
+
 
 def _normaliser_heltal(
     *,
@@ -851,6 +754,5 @@ def _valider_session_og_side(
 
 
 __all__ = [
-    "States",
     "behandel_page",
 ]

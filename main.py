@@ -4,6 +4,28 @@ from __future__ import annotations
 
 Alle konfigurerbare inputs importeres fra config.py.
 Main.py læser derfor ikke værdier fra .env eller os.getenv.
+
+Queue-mode
+----------
+
+Ved --queue hentes relevante skader gennem populate_queue.py.
+
+Process-mode
+------------
+
+Hvert work item behandles gennem behandel_page().
+
+Manuel behandling
+-----------------
+
+behandel_page() registrerer manuel behandling ved at sætte:
+
+- status "Manuel"
+- statuskode "Manuel"
+- én state, som starter med "1.0 Manuel -"
+
+Main.py finder den manuelle state efter behandlingen og sikrer,
+at itemet ikke overskrives med status Completed.
 """
 
 import asyncio

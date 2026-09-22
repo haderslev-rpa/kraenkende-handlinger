@@ -1,10 +1,25 @@
 from __future__ import annotations
 
-"""
-Fylder Automation Server-køen med relevante skader fra Insubiz.
+"""Fylder Automation Server-køen med relevante skader fra Insubiz.
 
-Alle procesinputs og konfigurerbare værdier importeres fra config.py.
-Denne fil indeholder kun kølogik, validering og opbygning af work items.
+Alle konfigurerbare inputs importeres fra config.py.
+Denne fil læser ikke værdier fra .env eller miljøvariabler.
+
+Work item-data oprettes med følgende domænefelter i box:
+
+    {
+        "box": {
+            "Skade_id": 2488985,
+            "Skade_nr": "2026-001234",
+            "Undertype": "Krænkende handling",
+            "Status": "Ny"
+        },
+        "defer": null,
+        "state": [],
+        "status": {}
+    }
+
+Skade_id anvendes som work item-reference.
 """
 
 import logging
@@ -17,12 +32,12 @@ from config import (
     BOX_SKADE_NR,
     BOX_STATUS,
     BOX_UNDERTYPE,
+    CLAIM_GROUP_ID,
     CREATED_YEAR_FROM,
     CREATED_YEAR_TO,
     CUSTOMER_ID,
     CUSTOMER_SEGMENTATION_1,
     CUSTOMER_SEGMENTATION_2,
-    CLAIM_GROUP_ID,
     INCIDENT_YEAR_FROM,
     INCIDENT_YEAR_TO,
     KRAENKENDE_HANDLING_UNDERTYPE,
@@ -50,12 +65,12 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------
-# Normalisering
+# NORMALISERING
 # --------------------------------------------------
 
 
 def _normaliser_feltnavn(value: str) -> str:
-    """Normaliserer et kolonnenavn til robust sammenligning."""
+    """Normaliserer et feltnavn til robust sammenligning."""
     if not isinstance(value, str):
         raise TypeError(
             "Feltnavnet skal være tekst. "
@@ -71,7 +86,7 @@ def _normaliser_feltnavn(value: str) -> str:
 
 
 def _normaliser_tekst(value: str) -> str:
-    """Normaliserer tekst til sammenligning."""
+    """Normaliserer tekst til robust sammenligning."""
     return " ".join(str(value).strip().split()).casefold()
 
 
@@ -109,12 +124,12 @@ def _normaliser_paakraevet_tekst(
 
 
 def _utc_timestamp() -> str:
-    """Returnerer aktuelt UTC-tidspunkt i ATS-kompatibelt ISO-format."""
+    """Returnerer aktuelt UTC-tidspunkt i ISO-format."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 # --------------------------------------------------
-# Feltopslag
+# FELTOPSLAG
 # --------------------------------------------------
 
 
@@ -123,7 +138,7 @@ def _find_feltnavn(
     skade: dict[str, Any],
     feltnavne: Iterable[str],
 ) -> str | None:
-    """Finder det faktiske feltnavn via en samling aliaser."""
+    """Finder det faktiske feltnavn via kendte aliaser."""
     if not isinstance(skade, dict):
         raise TypeError(
             "skade skal være en dictionary. "
@@ -300,12 +315,12 @@ def _hent_skade_nr(*, skade: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------
-# Work item-struktur
+# WORK ITEM-STRUKTUR
 # --------------------------------------------------
 
 
 def _opret_data_json() -> dict[str, Any]:
-    """Opretter standardstrukturen. Domænedata placeres kun i box."""
+    """Opretter standardstrukturen med domænedata i box."""
     return {
         "box": {},
         "defer": None,
@@ -359,7 +374,7 @@ def _fjern_domaenefelter_fra_roden(
     *,
     data_json: dict[str, Any],
 ) -> None:
-    """Fjerner ældre domænefelter fra roden af work item-data."""
+    """Fjerner domænefelter fra roden af work item-data."""
     root_fields = (
         "skade_id",
         "Skade_id",
@@ -369,6 +384,7 @@ def _fjern_domaenefelter_fra_roden(
         "Skade_nr",
         "Skade nr",
         "Skade-nr",
+        "Skadenr.",
         "IncidentNumberInternal",
         "IncidentSubType",
         "IncidentStatus",
@@ -381,7 +397,7 @@ def _fjern_domaenefelter_fra_roden(
 
 
 def _kontroller_data_json(*, data_json: dict[str, Any]) -> None:
-    """Kontrollerer at domænedata kun findes i box."""
+    """Kontrollerer at de forventede domænefelter findes i box."""
     box = _hent_box(data_json=data_json)
 
     forventede_box_felter = (
@@ -423,6 +439,7 @@ def _kontroller_data_json(*, data_json: dict[str, Any]) -> None:
         "Skade_nr",
         "Skade nr",
         "Skade-nr",
+        "Skadenr.",
         "IncidentNumberInternal",
     )
 
@@ -449,7 +466,7 @@ def _hent_item_reference(*, data_json: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------
-# Fyld kø
+# FYLD KØ
 # --------------------------------------------------
 
 
@@ -517,7 +534,10 @@ async def populate_queue(
         antal_filtreret = 0
         queue_lookup_end = _utc_timestamp()
 
-        for row_number, skade in enumerate(skader, start=1):
+        for row_number, skade in enumerate(
+            skader,
+            start=1,
+        ):
             if not isinstance(skade, dict):
                 raise RuntimeError(
                     "Skadelisten indeholder en ugyldig række. "
@@ -525,8 +545,13 @@ async def populate_queue(
                     f"Modtog: {type(skade).__name__}."
                 )
 
-            skade_id = _hent_skade_id(skade=skade)
-            skade_nr = _hent_skade_nr(skade=skade)
+            skade_id = _hent_skade_id(
+                skade=skade,
+            )
+
+            skade_nr = _hent_skade_nr(
+                skade=skade,
+            )
 
             undertype = _hent_tekstvaerdi(
                 skade=skade,
@@ -540,7 +565,10 @@ async def populate_queue(
                 felttype="status",
             )
 
-            if _tekster_er_ens(status, AFSLUTTET_STATUS):
+            if _tekster_er_ens(
+                status,
+                AFSLUTTET_STATUS,
+            ):
                 antal_filtreret += 1
                 continue
 

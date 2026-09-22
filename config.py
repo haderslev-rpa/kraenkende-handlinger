@@ -2,13 +2,9 @@ from __future__ import annotations
 
 """Samlet konfiguration til processen krænkende-handlinger.
 
-Denne fil indeholder alle procesinputs og konfigurerbare værdier.
-Projektet behøver derfor ikke en .env-fil til HEADLESS eller mail.
-
-Vigtigt
--------
-QUEUE_ID skal erstattes med det faktiske positive kø-id fra
-Automation Server, før queue-mode køres.
+Alle konfigurerbare procesinputs er samlet i denne fil.
+main.py, populate_queue.py og behandel.py importerer værdierne herfra.
+Der læses ikke fra .env eller miljøvariabler.
 """
 
 from datetime import datetime, timezone
@@ -18,14 +14,14 @@ from datetime import datetime, timezone
 # AUTOMATION SERVER
 # ------------------------------------------------------------
 
-# Erstat None med det faktiske positive queue-id.
 QUEUE_ID: int = 14
+
 
 # ------------------------------------------------------------
 # BROWSER
 # ------------------------------------------------------------
 
-HEADLESS = True
+HEADLESS: bool = True
 
 
 # ------------------------------------------------------------
@@ -34,6 +30,25 @@ HEADLESS = True
 
 MAILAFSENDER = "dirxfb@haderslev.dk"
 MAILMODTAGER = "forsikring@haderslev.dk"
+MAIL_EMNE_PREFIX = "Skade nr"
+
+MAILTEKST_COMPENSATION = (
+    "Vurderes efter arbejdsskadeloven? har ikke den forventede "
+    "værdi af krav 2\n"
+    "Robot vil ikke længere behandle dette skade nr"
+)
+
+MAILTEKST_UARBEJDSDYGTIGHED = (
+    "Forventet fravær er ikke som forventet.\n"
+    "Robot vil ikke længere behandle dette skade nr"
+)
+
+MAILTEKST_BEGGE_KRAV = (
+    "Vurderes efter arbejdsskadeloven? har ikke den forventede "
+    "værdi af krav 2\n"
+    "Forventet fravær er ikke som forventet.\n"
+    "Robot vil ikke længere behandle dette skade nr"
+)
 
 
 # ------------------------------------------------------------
@@ -44,17 +59,19 @@ STATUS_COMPLETED = "Completed"
 STATUS_CODE_COMPLETED = "Færdig"
 STATUS_MANUEL = "Manuel"
 STATUS_CODE_MANUEL = "Manuel"
-MANUEL_STATE_PREFIX = "1.0 Manuel -"
 
 
 # ------------------------------------------------------------
-# BEHANDLINGSREGLER
+# FORRETNINGSREGLER
 # ------------------------------------------------------------
 
 FORVENTET_COMPENSATION_ID = 0
 FORVENTET_ACCIDENT_DURATION_TEXT = (
     "Uarbejdsdygtighed mindre end 1 dag"
 )
+
+AFSLUTTET_STATUS = "Afsluttet"
+KRAENKENDE_HANDLING_UNDERTYPE = "Krænkende handling"
 
 
 # ------------------------------------------------------------
@@ -72,6 +89,8 @@ STATE_MANUEL_BEGGE_KRAV = (
     "1.0 Manuel - Begge krav er ikke opfyldt"
 )
 
+MANUEL_STATE_PREFIX = "1.0 Manuel -"
+
 AFSLUTTENDE_STATES = (
     STATE_AFSLUT_SKADE,
     STATE_MANUEL_COMPENSATION,
@@ -81,45 +100,24 @@ AFSLUTTENDE_STATES = (
 
 
 # ------------------------------------------------------------
-# MAILTEKSTER VED MANUEL BEHANDLING
-# ------------------------------------------------------------
-
-MAIL_EMNE_PREFIX = "Skade nr"
-MAILTEKST_COMPENSATION = (
-    "Vurderes efter arbejdsskadeloven? har ikke den forventede "
-    "værdi af krav 2\n"
-    "Robot vil ikke længere behandle dette skade nr"
-)
-MAILTEKST_UARBEJDSDYGTIGHED = (
-    "Forventet fravær er ikke som forventet.\n"
-    "Robot vil ikke længere behandle dette skade nr"
-)
-MAILTEKST_BEGGE_KRAV = (
-    "Vurderes efter arbejdsskadeloven? har ikke den forventede "
-    "værdi af krav 2\n"
-    "Forventet fravær er ikke som forventet.\n"
-    "Robot vil ikke længere behandle dette skade nr"
-)
-
-
-# ------------------------------------------------------------
-# POPULATE QUEUE-FILTRE
+# POPULATE QUEUE, INSUBIZ-FILTRE
 # ------------------------------------------------------------
 
 CURRENT_YEAR = datetime.now(timezone.utc).year
+
 CUSTOMER_ID: int | None = None
 CUSTOMER_SEGMENTATION_1 = -1
 CUSTOMER_SEGMENTATION_2 = -1
 CLAIM_GROUP_ID = 0
 STATUS_ID = -2
+
 CREATED_YEAR_FROM = 0
 CREATED_YEAR_TO = CURRENT_YEAR
 INCIDENT_YEAR_FROM = CURRENT_YEAR - 1
 INCIDENT_YEAR_TO = CURRENT_YEAR
 SHOW_TREE_DATA = False
+
 QUEUE_LOOKBACK_START = "2025-07-01T00:00:00Z"
-AFSLUTTET_STATUS = "Afsluttet"
-KRAENKENDE_HANDLING_UNDERTYPE = "Krænkende handling"
 
 
 # ------------------------------------------------------------
@@ -145,6 +143,7 @@ SKADE_ID_FELTER = (
     "Id",
     "IncidentId",
 )
+
 SKADE_NR_FELTER = (
     "Skadenr.",
     "Skadenr",
@@ -157,11 +156,13 @@ SKADE_NR_FELTER = (
     "IncidentNumberInternal",
     "Incident number internal",
 )
+
 UNDERTYPE_FELTER = (
     "Undertype",
     "IncidentSubType",
     "Incident subtype",
 )
+
 STATUS_FELTER = (
     "Status",
     "IncidentStatus",
