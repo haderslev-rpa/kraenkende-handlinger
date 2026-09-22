@@ -146,6 +146,9 @@ SKADE_ID_FELTER = (
     "IncidentId",
 )
 SKADE_NR_FELTER = (
+    "Skadenr.",
+    "Skadenr",
+    "Skade nr.",
     "Skade nr",
     "Skade-nr",
     "Skade_nr",
