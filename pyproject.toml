@@ -1,14 +1,98 @@
 [project]
-name = "process-template"
-version = "0.2.0"
-description = "Add your description here"
+name = "kraenkende-handlinger"
+version = "0.1.0"
+description = "Automatisering til behandling af krænkende handlinger"
 readme = "README.md"
 requires-python = ">=3.13"
+
 dependencies = [
     "automation-server-client",
     "q-haderslev-vbo",
+    "q-insubiz",
+    "q-outlook-api",
+    "openpyxl>=3.1.5",
+    "playwright>=1.59.0",
+    "python-dotenv",
 ]
 
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+]
+
+
 [tool.uv.sources]
-automation-server-client = { git = "https://github.com/odense-rpa/automation-server-client.git", tag = "v0.3.0" }
-q-haderslev-vbo = { git = "https://github.com/haderslev-rpa/q-haderslev-vbo.git", branch = "main" }
+automation-server-client = {
+    git = "https://github.com/odense-rpa/automation-server-client.git",
+    tag = "v0.3.0",
+}
+
+q-haderslev-vbo = {
+    git = "https://github.com/haderslev-rpa/q-haderslev-vbo.git",
+    branch = "main",
+}
+
+q-insubiz = {
+    path = "../q-insubiz",
+    editable = true,
+}
+
+q-outlook-api = {
+    git = "https://github.com/haderslev-rpa/q-outlook-api.git",
+    branch = "main",
+}
+
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+testpaths = [
+    "tests",
+]
+
+python_files = [
+    "test_*.py",
+]
+
+python_functions = [
+    "test_*",
+]
+
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+]
+
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "B",
+    "UP",
+]
+
+ignore = [
+    "E501",
+]
+
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "behandel",
+    "q_insubiz",
+    "q_outlook_api",
+]
