@@ -3,29 +3,38 @@ from __future__ import annotations
 """
 Fylder Automation Server-køen med relevante skader fra Insubiz.
 
-Work item-strukturen følger processtandarden. Domænedata placeres kun i
-box, herunder både det tekniske skade-id og det læsevenlige skadenummer:
-
-    {
-        "box": {
-            "Skade_id": 2488985,
-            "Skade_nr": "2026-001234",
-            "Undertype": "Krænkende handling",
-            "Status": "Ny"
-        },
-        "defer": null,
-        "state": [],
-        "status": {}
-    }
-
-Skade_id anvendes som work item-reference. Skade_nr er skadens interne,
-læsevenlige nummer fra IncidentNumberInternal.
+Alle procesinputs og konfigurerbare værdier importeres fra config.py.
+Denne fil indeholder kun kølogik, validering og opbygning af work items.
 """
 
 import logging
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from config import (
+    AFSLUTTET_STATUS,
+    BOX_SKADE_ID,
+    BOX_SKADE_NR,
+    BOX_STATUS,
+    BOX_UNDERTYPE,
+    CREATED_YEAR_FROM,
+    CREATED_YEAR_TO,
+    CUSTOMER_ID,
+    CUSTOMER_SEGMENTATION_1,
+    CUSTOMER_SEGMENTATION_2,
+    CLAIM_GROUP_ID,
+    INCIDENT_YEAR_FROM,
+    INCIDENT_YEAR_TO,
+    KRAENKENDE_HANDLING_UNDERTYPE,
+    QUEUE_LOOKBACK_START,
+    SHOW_TREE_DATA,
+    SKADE_ID_FELTER,
+    SKADE_NR_FELTER,
+    SKADER_LISTE_COLUMNS,
+    STATUS_FELTER,
+    STATUS_ID,
+    UNDERTYPE_FELTER,
+)
 from q_haderslev_vbo.automation_server.ats_is_item_in_queue import (
     is_item_in_queue,
 )
@@ -41,76 +50,9 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------
-# Standardværdier
-# --------------------------------------------------
-
-CURRENT_YEAR = datetime.now(timezone.utc).year
-QUEUE_LOOKBACK_START = "2025-07-01T00:00:00Z"
-
-AFSLUTTET_STATUS = "Afsluttet"
-KRAENKENDE_HANDLING_UNDERTYPE = "Krænkende handling"
-
-
-# --------------------------------------------------
-# Insubiz-kolonner
-# --------------------------------------------------
-
-SKADER_LISTE_COLUMNS = [
-    "Id",
-    "IncidentNumberInternal",
-    "IncidentSubType",
-    "IncidentStatus",
-]
-
-
-# --------------------------------------------------
-# Feltaliaser
-# --------------------------------------------------
-
-SKADE_ID_FELTER = (
-    "Skade id",
-    "Skade-id",
-    "Skade_id",
-    "Id",
-    "IncidentId",
-)
-
-SKADE_NR_FELTER = (
-    "Skade nr",
-    "Skade-nr",
-    "Skade_nr",
-    "Skadenummer",
-    "Internt skadenummer",
-    "IncidentNumberInternal",
-    "Incident number internal",
-)
-
-UNDERTYPE_FELTER = (
-    "Undertype",
-    "IncidentSubType",
-    "Incident subtype",
-)
-
-STATUS_FELTER = (
-    "Status",
-    "IncidentStatus",
-    "Incident status",
-)
-
-
-# --------------------------------------------------
-# Feltstandarder i box
-# --------------------------------------------------
-
-BOX_SKADE_ID = "Skade_id"
-BOX_SKADE_NR = "Skade_nr"
-BOX_UNDERTYPE = "Undertype"
-BOX_STATUS = "Status"
-
-
-# --------------------------------------------------
 # Normalisering
 # --------------------------------------------------
+
 
 def _normaliser_feltnavn(value: str) -> str:
     """Normaliserer et kolonnenavn til robust sammenligning."""
@@ -138,12 +80,17 @@ def _tekster_er_ens(value: str, expected: str) -> bool:
     return _normaliser_tekst(value) == _normaliser_tekst(expected)
 
 
-def _normaliser_paakraevet_tekst(*, name: str, value: str) -> str:
+def _normaliser_paakraevet_tekst(
+    *,
+    name: str,
+    value: str,
+) -> str:
     """Validerer og normaliserer en obligatorisk tekstværdi."""
     if not isinstance(name, str):
         raise TypeError("name skal være tekst.")
 
     normalized_name = name.strip()
+
     if not normalized_name:
         raise ValueError("name må ikke være tom.")
 
@@ -154,6 +101,7 @@ def _normaliser_paakraevet_tekst(*, name: str, value: str) -> str:
         )
 
     normalized_value = value.strip()
+
     if not normalized_value:
         raise ValueError(f"{normalized_name} må ikke være tom.")
 
@@ -169,6 +117,7 @@ def _utc_timestamp() -> str:
 # Feltopslag
 # --------------------------------------------------
 
+
 def _find_feltnavn(
     *,
     skade: dict[str, Any],
@@ -182,7 +131,9 @@ def _find_feltnavn(
         )
 
     if isinstance(feltnavne, (str, bytes)):
-        raise TypeError("feltnavne skal være en samling af tekstværdier.")
+        raise TypeError(
+            "feltnavne skal være en samling af tekstværdier."
+        )
 
     normaliserede_felter = {
         _normaliser_feltnavn(faktisk_feltnavn): faktisk_feltnavn
@@ -192,11 +143,14 @@ def _find_feltnavn(
 
     for feltnavn in feltnavne:
         if not isinstance(feltnavn, str):
-            raise TypeError("Alle værdier i feltnavne skal være tekst.")
+            raise TypeError(
+                "Alle værdier i feltnavne skal være tekst."
+            )
 
         faktisk_feltnavn = normaliserede_felter.get(
             _normaliser_feltnavn(feltnavn)
         )
+
         if faktisk_feltnavn is not None:
             return faktisk_feltnavn
 
@@ -216,10 +170,12 @@ def _hent_feltvaerdi(
         raise TypeError("felttype skal være tekst.")
 
     normalized_felttype = felttype.strip()
+
     if not normalized_felttype:
         raise ValueError("felttype må ikke være tom.")
 
     aliaser = tuple(feltnavne)
+
     if not aliaser:
         raise ValueError("feltnavne må ikke være tom.")
 
@@ -231,6 +187,7 @@ def _hent_feltvaerdi(
     if faktisk_feltnavn is None:
         if not paakraevet:
             return standardvaerdi
+
         raise RuntimeError(
             "Skadelisten mangler et forventet felt. "
             f"Felttype: {normalized_felttype!r}. "
@@ -239,9 +196,11 @@ def _hent_feltvaerdi(
         )
 
     value = skade.get(faktisk_feltnavn)
+
     if value is None:
         if not paakraevet:
             return standardvaerdi
+
         raise RuntimeError(
             "Skadelisten indeholder en tom værdi. "
             f"Felttype: {normalized_felttype!r}. "
@@ -274,6 +233,7 @@ def _hent_tekstvaerdi(
                 "Skadelisten indeholder en tom tekstværdi. "
                 f"Felttype: {felttype!r}."
             )
+
         return standardvaerdi
 
     if isinstance(value, dict):
@@ -283,6 +243,7 @@ def _hent_tekstvaerdi(
             or value.get("value")
             or value.get("id")
         )
+
         if nested_value is None:
             if paakraevet:
                 raise RuntimeError(
@@ -290,16 +251,20 @@ def _hent_tekstvaerdi(
                     f"value eller id. Felttype: {felttype!r}. "
                     f"Værdi: {value!r}."
                 )
+
             return standardvaerdi
+
         value = nested_value
 
     normalized_value = str(value).strip()
+
     if not normalized_value:
         if paakraevet:
             raise RuntimeError(
                 "Skadelisten indeholder en tom tekstværdi. "
                 f"Felttype: {felttype!r}."
             )
+
         return standardvaerdi
 
     return normalized_value
@@ -314,7 +279,10 @@ def _hent_skade_id(*, skade: dict[str, Any]) -> int:
     )
 
     try:
-        return normalize_positive_id(name="skade_id", value=raw_skade_id)
+        return normalize_positive_id(
+            name="skade_id",
+            value=raw_skade_id,
+        )
     except (TypeError, ValueError) as error:
         raise RuntimeError(
             "Skadelistens skade-id er ugyldigt. "
@@ -334,6 +302,7 @@ def _hent_skade_nr(*, skade: dict[str, Any]) -> str:
 # --------------------------------------------------
 # Work item-struktur
 # --------------------------------------------------
+
 
 def _opret_data_json() -> dict[str, Any]:
     """Opretter standardstrukturen. Domænedata placeres kun i box."""
@@ -379,13 +348,17 @@ def _hent_box(*, data_json: dict[str, Any]) -> dict[str, Any]:
         raise TypeError("data_json skal være en dictionary.")
 
     box = data_json.get("box")
+
     if not isinstance(box, dict):
         raise RuntimeError("data_json mangler en gyldig box.")
 
     return box
 
 
-def _fjern_domaenefelter_fra_roden(*, data_json: dict[str, Any]) -> None:
+def _fjern_domaenefelter_fra_roden(
+    *,
+    data_json: dict[str, Any],
+) -> None:
     """Fjerner ældre domænefelter fra roden af work item-data."""
     root_fields = (
         "skade_id",
@@ -417,6 +390,7 @@ def _kontroller_data_json(*, data_json: dict[str, Any]) -> None:
         BOX_UNDERTYPE,
         BOX_STATUS,
     )
+
     manglende_box_felter = [
         field_name
         for field_name in forventede_box_felter
@@ -434,6 +408,7 @@ def _kontroller_data_json(*, data_json: dict[str, Any]) -> None:
         name="box.Skade_id",
         value=box[BOX_SKADE_ID],
     )
+
     _normaliser_paakraevet_tekst(
         name="box.Skade_nr",
         value=box[BOX_SKADE_NR],
@@ -450,6 +425,7 @@ def _kontroller_data_json(*, data_json: dict[str, Any]) -> None:
         "Skade-nr",
         "IncidentNumberInternal",
     )
+
     for forbidden_field in forbidden_root_fields:
         if forbidden_field in data_json:
             raise RuntimeError(
@@ -461,11 +437,14 @@ def _kontroller_data_json(*, data_json: dict[str, Any]) -> None:
 def _hent_item_reference(*, data_json: dict[str, Any]) -> str:
     """Henter work item-reference fra box.Skade_id."""
     _kontroller_data_json(data_json=data_json)
+
     box = _hent_box(data_json=data_json)
+
     skade_id = normalize_positive_id(
         name="box.Skade_id",
         value=box[BOX_SKADE_ID],
     )
+
     return str(skade_id)
 
 
@@ -473,28 +452,23 @@ def _hent_item_reference(*, data_json: dict[str, Any]) -> str:
 # Fyld kø
 # --------------------------------------------------
 
+
 async def populate_queue(
     *,
     workqueue: Any,
     queue_id: int,
-    customer_id: int | None = None,
-    customer_segmentation_1: int = -1,
-    customer_segmentation_2: int = -1,
-    claim_group_id: int = 0,
-    status_id: int = -2,
-    created_year_from: int = 0,
-    created_year_to: int = CURRENT_YEAR,
-    incident_year_from: int = CURRENT_YEAR - 1,
-    incident_year_to: int = CURRENT_YEAR,
-    show_tree_data: bool = False,
+    customer_id: int | None = CUSTOMER_ID,
+    customer_segmentation_1: int = CUSTOMER_SEGMENTATION_1,
+    customer_segmentation_2: int = CUSTOMER_SEGMENTATION_2,
+    claim_group_id: int = CLAIM_GROUP_ID,
+    status_id: int = STATUS_ID,
+    created_year_from: int = CREATED_YEAR_FROM,
+    created_year_to: int = CREATED_YEAR_TO,
+    incident_year_from: int = INCIDENT_YEAR_FROM,
+    incident_year_to: int = INCIDENT_YEAR_TO,
+    show_tree_data: bool = SHOW_TREE_DATA,
 ) -> None:
-    """
-    Henter relevante skader fra Insubiz og opretter work items.
-
-    Kun skader med undertypen Krænkende handling, som ikke har status
-    Afsluttet, bliver tilføjet. Dubletter søges fra 1. juli 2025 til det
-    aktuelle UTC-tidspunkt.
-    """
+    """Henter relevante skader fra Insubiz og opretter work items."""
     if workqueue is None:
         raise ValueError("workqueue må ikke være None.")
 
@@ -502,6 +476,7 @@ async def populate_queue(
         name="queue_id",
         value=queue_id,
     )
+
     api_client = create_api_client()
 
     try:
@@ -526,9 +501,16 @@ async def populate_queue(
                 f"Modtog: {type(skader).__name__}."
             )
 
-        logger.info("Skadelisten blev hentet. Antal: %s.", len(skader))
+        logger.info(
+            "Skadelisten blev hentet. Antal: %s.",
+            len(skader),
+        )
+
         if skader:
-            logger.info("Kolonner i skadelisten: %s.", list(skader[0].keys()))
+            logger.info(
+                "Kolonner i skadelisten: %s.",
+                list(skader[0].keys()),
+            )
 
         antal_tilfoejet = 0
         antal_dubletter = 0
@@ -539,16 +521,19 @@ async def populate_queue(
             if not isinstance(skade, dict):
                 raise RuntimeError(
                     "Skadelisten indeholder en ugyldig række. "
-                    f"Række: {row_number}. Modtog: {type(skade).__name__}."
+                    f"Række: {row_number}. "
+                    f"Modtog: {type(skade).__name__}."
                 )
 
             skade_id = _hent_skade_id(skade=skade)
             skade_nr = _hent_skade_nr(skade=skade)
+
             undertype = _hent_tekstvaerdi(
                 skade=skade,
                 feltnavne=UNDERTYPE_FELTER,
                 felttype="undertype",
             )
+
             status = _hent_tekstvaerdi(
                 skade=skade,
                 feltnavne=STATUS_FELTER,
@@ -557,20 +542,13 @@ async def populate_queue(
 
             if _tekster_er_ens(status, AFSLUTTET_STATUS):
                 antal_filtreret += 1
-                logger.debug(
-                    "Springer afsluttet skade over. Skade-id: %s.",
-                    skade_id,
-                )
                 continue
 
-            if not _tekster_er_ens(undertype, KRAENKENDE_HANDLING_UNDERTYPE):
+            if not _tekster_er_ens(
+                undertype,
+                KRAENKENDE_HANDLING_UNDERTYPE,
+            ):
                 antal_filtreret += 1
-                logger.debug(
-                    "Springer skade med anden undertype over. "
-                    "Skade-id: %s. Undertype: %s.",
-                    skade_id,
-                    undertype,
-                )
                 continue
 
             raw_item = _opret_box_data(
@@ -579,6 +557,7 @@ async def populate_queue(
                 undertype=undertype,
                 status=status,
             )
+
             data_json = _opret_data_json()
 
             update_item_data(
@@ -586,8 +565,14 @@ async def populate_queue(
                 box_updates=raw_item,
                 update=False,
             )
-            _fjern_domaenefelter_fra_roden(data_json=data_json)
-            item_reference = _hent_item_reference(data_json=data_json)
+
+            _fjern_domaenefelter_fra_roden(
+                data_json=data_json,
+            )
+
+            item_reference = _hent_item_reference(
+                data_json=data_json,
+            )
 
             if is_item_in_queue(
                 queue_id=normalized_queue_id,
@@ -601,14 +586,17 @@ async def populate_queue(
                 updated_at=False,
             ):
                 antal_dubletter += 1
+
                 logger.info(
-                    "Springer eksisterende item over. Række: %s. "
-                    "Skade-id: %s. Skadenummer: %s. Reference: %s.",
+                    "Springer eksisterende item over. "
+                    "Række: %s. Skade-id: %s. "
+                    "Skadenummer: %s. Reference: %s.",
                     row_number,
                     skade_id,
                     skade_nr,
                     item_reference,
                 )
+
                 print(
                     "Springer over: Item med reference "
                     f"{item_reference!r} findes allerede. "
@@ -620,11 +608,13 @@ async def populate_queue(
                 data=data_json,
                 reference=item_reference,
             )
+
             antal_tilfoejet += 1
 
             logger.info(
-                "Skade blev tilføjet. Række: %s. Skade-id: %s. "
-                "Skadenummer: %s. Reference: %s. Undertype: %s. Status: %s.",
+                "Skade blev tilføjet. Række: %s. "
+                "Skade-id: %s. Skadenummer: %s. "
+                "Reference: %s. Undertype: %s. Status: %s.",
                 row_number,
                 skade_id,
                 skade_nr,
@@ -632,15 +622,18 @@ async def populate_queue(
                 undertype,
                 status,
             )
+
             print(
                 "Tilføjet til kø: "
                 f"Reference {item_reference!r}, "
                 f"skadenummer {skade_nr!r}, "
-                f"undertype {undertype!r}, status {status!r}."
+                f"undertype {undertype!r}, "
+                f"status {status!r}."
             )
 
         logger.info(
-            "Køoprettelsen er afsluttet. Hentet: %s. Tilføjet: %s. "
+            "Køoprettelsen er afsluttet. "
+            "Hentet: %s. Tilføjet: %s. "
             "Dubletter: %s. Filtreret: %s.",
             len(skader),
             antal_tilfoejet,
@@ -657,6 +650,7 @@ async def populate_queue(
         print(f"Antal dubletter: {antal_dubletter}")
         print(f"Antal filtreret fra: {antal_filtreret}")
         print("=" * 80)
+
     finally:
         await api_client.close()
 

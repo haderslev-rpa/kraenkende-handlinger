@@ -1,37 +1,13 @@
 from __future__ import annotations
 
-"""
-Hovedindgang til processen.
+"""Hovedindgang til processen.
 
-Queue-mode
-----------
-
-Kør med:
-
-    uv run python main.py --queue
-
-Process-mode
-------------
-
-Kør med:
-
-    uv run python main.py
-
-Manuel behandling
------------------
-
-behandel_page() kan markere et item til manuel behandling ved at sætte:
-
-    data["box"]["Manuel behandling"] = True
-
-Når dette felt er True, overskriver main.py ikke status med Completed.
-Itemet opdateres i stedet med status "Manuel" og den state samt årsag,
-som behandel_page() allerede har skrevet til work item-data.
+Alle konfigurerbare inputs importeres fra config.py.
+Main.py læser derfor ikke værdier fra .env eller os.getenv.
 """
 
 import asyncio
 import logging
-import os
 import sys
 from pprint import pprint
 from typing import Any
@@ -42,7 +18,17 @@ from automation_server_client import (
     WorkItemStatus,
     Workqueue,
 )
+
 from behandel import behandel_page
+from config import (
+    HEADLESS,
+    MANUEL_STATE_PREFIX,
+    QUEUE_ID,
+    STATUS_CODE_COMPLETED,
+    STATUS_CODE_MANUEL,
+    STATUS_COMPLETED,
+    STATUS_MANUEL,
+)
 from populate_queue import populate_queue
 from q_haderslev_vbo.automation_server.ats_update_item_data import (
     update_item_data,
@@ -71,132 +57,82 @@ logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------
-# WORK ITEM-STATUS
+# KONFIGURATIONSKONTROL
 # ------------------------------------------------------------
 
-STATUS_COMPLETED = "Completed"
-STATUS_CODE_COMPLETED = "Færdig"
 
-STATUS_MANUEL = "Manuel"
-STATUS_CODE_MANUEL = "Manuel"
-
-BOX_MANUEL_BEHANDLING = "Manuel behandling"
-BOX_MANUEL_AARSAG = "Manuel årsag"
-
-
-# ------------------------------------------------------------
-# QUEUE-ID
-# ------------------------------------------------------------
-
-def _hent_queue_id(
-    *,
-    workqueue: Workqueue,
-) -> int:
-    """
-    Henter queue-id fra miljøet eller workqueue-objektet.
-
-    Først anvendes miljøvariablen QUEUE_ID. Hvis den ikke findes,
-    undersøges almindelige attributter på workqueue-objektet.
-    """
-    environment_value = os.getenv("QUEUE_ID")
-
-    if environment_value is not None and environment_value.strip():
+def _hent_queue_id() -> int:
+    """Validerer og returnerer queue-id fra config.py."""
+    try:
         return normalize_positive_id(
             name="QUEUE_ID",
-            value=environment_value,
+            value=QUEUE_ID,
+        )
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(
+            "QUEUE_ID i config.py skal være et positivt heltal. "
+            f"Modtog: {QUEUE_ID!r}."
+        ) from error
+
+
+def _hent_headless() -> bool:
+    """Validerer og returnerer HEADLESS fra config.py."""
+    if not isinstance(HEADLESS, bool):
+        raise RuntimeError(
+            "HEADLESS i config.py skal være True eller False. "
+            f"Modtog: {HEADLESS!r}."
         )
 
-    for attribute_name in (
-        "queue_id",
-        "id",
-        "workqueue_id",
-    ):
-        value = getattr(
-            workqueue,
-            attribute_name,
-            None,
-        )
-
-        if value is None:
-            continue
-
-        try:
-            return normalize_positive_id(
-                name=f"workqueue.{attribute_name}",
-                value=value,
-            )
-        except (TypeError, ValueError):
-            continue
-
-    raise RuntimeError(
-        "Queue-id kunne ikke findes. Angiv miljøvariablen "
-        "QUEUE_ID eller anvend et workqueue-objekt med queue_id, "
-        "id eller workqueue_id."
-    )
+    return HEADLESS
 
 
 # ------------------------------------------------------------
 # WORK ITEM-HJÆLPERE
 # ------------------------------------------------------------
 
-def _hent_box(
+
+def _hent_states(
     *,
     data: dict[str, Any],
-) -> dict[str, Any]:
-    """Returnerer work itemets box som dictionary."""
-    box = data.get("box")
+) -> list[Any]:
+    """Returnerer work itemets validerede state-liste."""
+    states = data.get("state", [])
 
-    if box is None:
-        box = {}
-        data["box"] = box
+    if states is None:
+        return []
 
-    if not isinstance(box, dict):
+    if not isinstance(states, list):
         raise WorkItemError(
-            "Work item-feltet box skal være en dictionary. "
-            f"Modtog: {type(box).__name__}."
+            "Work item-feltet state skal være en liste. "
+            f"Modtog: {type(states).__name__}."
         )
 
-    return box
+    return states
 
 
-def _er_manuel_behandling(
+def _hent_manuel_state(
     *,
     data: dict[str, Any],
-) -> bool:
-    """Returnerer True, når behandel_page har valgt manuel behandling."""
-    box = _hent_box(data=data)
-    value = box.get(
-        BOX_MANUEL_BEHANDLING,
-        False,
-    )
+) -> str | None:
+    """Finder den manuelle 1.0-state, som behandel.py har registreret."""
+    normalized_prefix = MANUEL_STATE_PREFIX.strip().casefold()
 
-    if isinstance(value, bool):
-        return value
+    if not normalized_prefix:
+        raise RuntimeError(
+            "MANUEL_STATE_PREFIX i config.py må ikke være tom."
+        )
 
-    if isinstance(value, str):
-        return value.strip().casefold() in {
-            "true",
-            "ja",
-            "1",
-            "manuel",
-        }
+    for existing_state in reversed(
+        _hent_states(data=data)
+    ):
+        state_text = str(existing_state).strip()
 
-    return bool(value)
+        if state_text.casefold().startswith(
+            normalized_prefix
+        ):
+            return state_text
 
-
-def _hent_manuel_aarsag(
-    *,
-    data: dict[str, Any],
-) -> str:
-    """Henter årsagen til manuel behandling fra box."""
-    box = _hent_box(data=data)
-    value = box.get(BOX_MANUEL_AARSAG)
-
-    if value is None:
-        return "Manuel behandling"
-
-    normalized_value = str(value).strip()
-    return normalized_value or "Manuel behandling"
+    return None
 
 
 def _gem_completed_item(
@@ -210,29 +146,24 @@ def _gem_completed_item(
         item=item,
         status=STATUS_COMPLETED,
         status_code=STATUS_CODE_COMPLETED,
-        state=STATUS_COMPLETED,
     )
 
     item.update(data)
     item.complete(STATUS_COMPLETED)
+
+    logger.info(
+        "Work item blev afsluttet. Reference: %s.",
+        item.reference,
+    )
 
 
 def _gem_manuelt_item(
     *,
     item: Any,
     data: dict[str, Any],
+    manuel_state: str,
 ) -> None:
-    """
-    Gemmer et item med status Manuel.
-
-    behandel_page() har allerede skrevet den konkrete 1.0-state og
-    årsagen til box. Main sikrer her, at status ikke overskrives med
-    Completed.
-    """
-    manuel_aarsag = _hent_manuel_aarsag(
-        data=data,
-    )
-
+    """Gemmer et item med status Manuel uden at overskrive 1.0-state."""
     update_item_data(
         data,
         item=item,
@@ -244,18 +175,20 @@ def _gem_manuelt_item(
     item.complete(STATUS_MANUEL)
 
     logger.info(
-        "Work item er sendt til manuel behandling. "
-        "Reference: %s. Årsag: %s.",
+        "Work item blev sendt til manuel behandling. "
+        "Reference: %s. State: %s.",
         item.reference,
-        manuel_aarsag,
+        manuel_state,
     )
 
 
 # ------------------------------------------------------------
-# PROCESS-MODE, WORKER
+# PROCESS-MODE
 # ------------------------------------------------------------
 
+
 async def process_workqueue(
+    *,
     workqueue: Workqueue,
     debug: bool,
 ) -> None:
@@ -265,18 +198,13 @@ async def process_workqueue(
             "debug skal være True eller False."
         )
 
-    logger.info(
-        "Process workqueue mode started "
-        "(debug=%s)",
-        debug,
-    )
+    headless = _hent_headless()
 
-    headless = (
-        os.getenv(
-            "HEADLESS",
-            "true",
-        ).lower()
-        == "true"
+    logger.info(
+        "Process workqueue mode startet. "
+        "Debug: %s. Headless: %s.",
+        debug,
+        headless,
     )
 
     session = BrowserSession(
@@ -312,12 +240,15 @@ async def process_workqueue(
                         page=page,
                     )
 
-                    if _er_manuel_behandling(
+                    manuel_state = _hent_manuel_state(
                         data=data,
-                    ):
+                    )
+
+                    if manuel_state is not None:
                         _gem_manuelt_item(
                             item=item,
                             data=data,
+                            manuel_state=manuel_state,
                         )
                     else:
                         _gem_completed_item(
@@ -332,9 +263,7 @@ async def process_workqueue(
                         error,
                     )
 
-                    item.fail(
-                        str(error)
-                    )
+                    item.fail(str(error))
 
                     await session.close()
 
@@ -348,7 +277,8 @@ async def process_workqueue(
 
                 except Exception as error:
                     logger.exception(
-                        "Uventet fejl"
+                        "Uventet fejl for item %s.",
+                        item.reference,
                     )
 
                     try:
@@ -369,7 +299,7 @@ async def process_workqueue(
                     except Exception:
                         logger.warning(
                             "Kunne ikke tage screenshot "
-                            "ved hard error"
+                            "ved hard error."
                         )
 
                     await session.close()
@@ -381,6 +311,7 @@ async def process_workqueue(
 # ------------------------------------------------------------
 # MAIN ENTRY POINT
 # ------------------------------------------------------------
+
 
 if __name__ == "__main__":
     DEBUG = "--debug" in sys.argv
@@ -397,9 +328,7 @@ if __name__ == "__main__":
         asyncio.run(
             populate_queue(
                 workqueue=workqueue,
-                queue_id=_hent_queue_id(
-                    workqueue=workqueue,
-                ),
+                queue_id=_hent_queue_id(),
             )
         )
 
@@ -407,7 +336,7 @@ if __name__ == "__main__":
 
     asyncio.run(
         process_workqueue(
-            workqueue,
+            workqueue=workqueue,
             debug=DEBUG,
         )
     )
