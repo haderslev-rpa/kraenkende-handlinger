@@ -25,6 +25,7 @@ dev = [
 
 
 [tool.uv.sources]
+
 automation-server-client = {
     git = "https://github.com/odense-rpa/automation-server-client.git",
     tag = "v0.3.0",
@@ -36,15 +37,14 @@ q-haderslev-vbo = {
 }
 
 q-insubiz = {
-    path = "../q-insubiz",
-    editable = true,
+    git = "https://github.com/haderslev-rpa/q-insubiz.git",
+    branch = "main",
 }
 
 q-outlook-api = {
     git = "https://github.com/haderslev-rpa/q-outlook-api.git",
     branch = "main",
 }
-
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
