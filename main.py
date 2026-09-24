@@ -58,6 +58,83 @@ from q_haderslev_vbo.automation_server.ats_update_item_data import (
 from q_haderslev_vbo.playwright.browser_session import BrowserSession
 from q_insubiz.utils import normalize_positive_id
 
+#TEST TEST
+
+import importlib.metadata
+import os
+import platform
+from pathlib import Path
+def log_playwright_diagnostics() -> None:
+    """
+    Udskriver diagnostiske oplysninger om Python, Playwright og installerede
+    browsere.
+    Output:
+        Funktionen returnerer ikke en værdi.
+        Oplysningerne skrives direkte til processens standard-output og vil
+        derfor kunne ses i Automation Servers log.
+    """
+    print("\n" + "=" * 70, flush=True)
+    print("PLAYWRIGHT-DIAGNOSTIK", flush=True)
+    print("=" * 70, flush=True)
+    print(f"Python-version: {sys.version}", flush=True)
+    print(f"Python executable: {sys.executable}", flush=True)
+    print(f"Operativsystem: {platform.platform()}", flush=True)
+    print(f"Container-hostname: {platform.node()}", flush=True)
+    print(f"Arbejdsmappe: {Path.cwd()}", flush=True)
+    try:
+        playwright_version = importlib.metadata.version("playwright")
+        print(f"Playwright-version: {playwright_version}", flush=True)
+    except importlib.metadata.PackageNotFoundError:
+        print("Playwright-version: Playwright er ikke installeret", flush=True)
+    browsers_path_value = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    print(
+        f"PLAYWRIGHT_BROWSERS_PATH: {browsers_path_value!r}",
+        flush=True,
+    )
+    if browsers_path_value and browsers_path_value != "0":
+        browser_root = Path(browsers_path_value)
+    else:
+        browser_root = Path.home() / ".cache" / "ms-playwright"
+    print(f"Browsermappe, som kontrolleres: {browser_root}", flush=True)
+    if not browser_root.exists():
+        print("Browsermappen findes ikke.", flush=True)
+        print("=" * 70 + "\n", flush=True)
+        return
+    print("Installerede browsermapper:", flush=True)
+    browser_directories = sorted(
+        path
+        for path in browser_root.iterdir()
+        if path.is_dir()
+    )
+    if not browser_directories:
+        print("  Ingen browsermapper fundet.", flush=True)
+    for browser_directory in browser_directories:
+        print(f"  {browser_directory}", flush=True)
+    expected_executables = []
+    # Nyere Playwright-versioner bruger normalt Headless Shell i headless mode.
+    for executable_name in (
+        "chrome-headless-shell",
+        "chrome",
+        "chromium",
+    ):
+        expected_executables.extend(
+            browser_root.rglob(executable_name)
+        )
+    print("Fundne Chromium-eksekveringsfiler:", flush=True)
+    if not expected_executables:
+        print("  Ingen Chromium-eksekveringsfiler fundet.", flush=True)
+    for executable_path in sorted(set(expected_executables)):
+        exists = executable_path.exists()
+        executable = os.access(executable_path, os.X_OK)
+        print(f"  Sti: {executable_path}", flush=True)
+        print(f"    Findes: {exists}", flush=True)
+        print(f"    Kan køres: {executable}", flush=True)
+    print("=" * 70 + "\n", flush=True)
+
+
+
+
+#TEST TEST
 
 # ------------------------------------------------------------
 # LOGGING
@@ -336,6 +413,8 @@ async def process_workqueue(
 
 
 if __name__ == "__main__":
+
+    log_playwright_diagnostics() #SKAL FJERNES
     DEBUG = "--debug" in sys.argv
     QUEUE_MODE = "--queue" in sys.argv
 
