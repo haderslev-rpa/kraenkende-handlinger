@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Samlet konfiguration til processen krænkende-handlinger.
 
 Alle konfigurerbare procesinputs er samlet i denne fil.
@@ -7,8 +5,9 @@ main.py, populate_queue.py og behandel.py importerer værdierne herfra.
 Der læses ikke fra .env eller miljøvariabler.
 """
 
-from datetime import datetime, timezone
+from __future__ import annotations
 
+from datetime import UTC, datetime
 
 # ------------------------------------------------------------
 # AUTOMATION SERVER
@@ -22,6 +21,12 @@ QUEUE_ID: int = 14
 # ------------------------------------------------------------
 
 HEADLESS: bool = True
+DEBUG_HEADLESS: bool = False
+QUEUE_HEADLESS: bool = True
+
+# Bevarer originalens adfaerd: --queue sletter alle NEW-items foer fyldning.
+# Saet False for at bevare eksisterende NEW-items.
+CLEAR_NEW_ITEMS_BEFORE_POPULATE: bool = True
 
 
 # ------------------------------------------------------------
@@ -66,44 +71,17 @@ STATUS_CODE_MANUEL = "Manuel"
 # ------------------------------------------------------------
 
 FORVENTET_COMPENSATION_ID = 0
-FORVENTET_ACCIDENT_DURATION_TEXT = (
-    "Uarbejdsdygtighed mindre end 1 dag"
-)
+FORVENTET_ACCIDENT_DURATION_TEXT = "Uarbejdsdygtighed mindre end 1 dag"
 
 AFSLUTTET_STATUS = "Afsluttet"
 KRAENKENDE_HANDLING_UNDERTYPE = "Krænkende handling"
 
 
 # ------------------------------------------------------------
-# STATES
-# ------------------------------------------------------------
-
-STATE_AFSLUT_SKADE = "1.0 Skade afsluttet"
-STATE_MANUEL_COMPENSATION = (
-    "1.0 Manuel - Vurderes efter arbejdsskadeloven = Ja"
-)
-STATE_MANUEL_UARBEJDSDYGTIGHED = (
-    "1.0 Manuel - Uarbejdsdygtighed er ikke mindre end 1 dag"
-)
-STATE_MANUEL_BEGGE_KRAV = (
-    "1.0 Manuel - Begge krav er ikke opfyldt"
-)
-
-MANUEL_STATE_PREFIX = "1.0 Manuel -"
-
-AFSLUTTENDE_STATES = (
-    STATE_AFSLUT_SKADE,
-    STATE_MANUEL_COMPENSATION,
-    STATE_MANUEL_UARBEJDSDYGTIGHED,
-    STATE_MANUEL_BEGGE_KRAV,
-)
-
-
-# ------------------------------------------------------------
 # POPULATE QUEUE, INSUBIZ-FILTRE
 # ------------------------------------------------------------
 
-CURRENT_YEAR = datetime.now(timezone.utc).year
+CURRENT_YEAR = datetime.now(UTC).year
 
 CUSTOMER_ID: int | None = None
 CUSTOMER_SEGMENTATION_1 = -1
@@ -181,7 +159,6 @@ BOX_STATUS = "Status"
 
 
 __all__ = [
-    "AFSLUTTENDE_STATES",
     "AFSLUTTET_STATUS",
     "BOX_SKADE_ID",
     "BOX_SKADE_NR",
@@ -197,6 +174,9 @@ __all__ = [
     "FORVENTET_ACCIDENT_DURATION_TEXT",
     "FORVENTET_COMPENSATION_ID",
     "HEADLESS",
+    "DEBUG_HEADLESS",
+    "QUEUE_HEADLESS",
+    "CLEAR_NEW_ITEMS_BEFORE_POPULATE",
     "INCIDENT_YEAR_FROM",
     "INCIDENT_YEAR_TO",
     "KRAENKENDE_HANDLING_UNDERTYPE",
@@ -206,17 +186,12 @@ __all__ = [
     "MAILTEKST_BEGGE_KRAV",
     "MAILTEKST_COMPENSATION",
     "MAILTEKST_UARBEJDSDYGTIGHED",
-    "MANUEL_STATE_PREFIX",
     "QUEUE_ID",
     "QUEUE_LOOKBACK_START",
     "SHOW_TREE_DATA",
     "SKADE_ID_FELTER",
     "SKADE_NR_FELTER",
     "SKADER_LISTE_COLUMNS",
-    "STATE_AFSLUT_SKADE",
-    "STATE_MANUEL_BEGGE_KRAV",
-    "STATE_MANUEL_COMPENSATION",
-    "STATE_MANUEL_UARBEJDSDYGTIGHED",
     "STATUS_CODE_COMPLETED",
     "STATUS_CODE_MANUEL",
     "STATUS_COMPLETED",

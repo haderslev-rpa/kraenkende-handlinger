@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 """Behandling af ét work item med en Insubiz-skade.
 
-Alle procesinputs og konfigurerbare værdier importeres fra config.py.
+Alle procesinputs og konfigurerbare værdier importeres fra configuration.py.
 Denne fil læser intet fra .env, miljøvariabler eller andre lokale
 konfigurationskilder.
 
@@ -20,45 +18,61 @@ Hvis et eller begge krav ikke er opfyldt:
 - Der tilføjes ingen ekstra felter i box.
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Any
 
 from automation_server_client import WorkItemError
 from playwright.async_api import Page
-from q_outlook_api.functionality.mail_api import send_mail
+from q_haderslev_vbo.automation_server.ats_update_item_data import (
+    update_item_data,
+)
+from q_haderslev_vbo.playwright.browser_session import BrowserSession
 
-from config import (
-    AFSLUTTENDE_STATES,
+from configuration import (
     FORVENTET_ACCIDENT_DURATION_TEXT,
     FORVENTET_COMPENSATION_ID,
+    MAIL_EMNE_PREFIX,
     MAILAFSENDER,
     MAILMODTAGER,
-    MAIL_EMNE_PREFIX,
     MAILTEKST_BEGGE_KRAV,
     MAILTEKST_COMPENSATION,
     MAILTEKST_UARBEJDSDYGTIGHED,
     SKADE_ID_FELTER,
     SKADE_NR_FELTER,
-    STATE_AFSLUT_SKADE,
-    STATE_MANUEL_BEGGE_KRAV,
-    STATE_MANUEL_COMPENSATION,
-    STATE_MANUEL_UARBEJDSDYGTIGHED,
     STATUS_CODE_MANUEL,
     STATUS_MANUEL,
 )
-from q_haderslev_vbo.automation_server.ats_update_item_data import (
-    update_item_data,
-)
-from q_haderslev_vbo.playwright.browser_session import BrowserSession
-from q_insubiz.api_client import create_api_client
+from q_insubiz.api.client import InsubizApiClient
 from q_insubiz.functionality.skader import (
     hent_skade_via_id,
     opdater_skade_status_fra_seneste_data,
 )
 from q_insubiz.models import SkadeStatus
-
+from q_outlook_api.functionality.mail_api import send_mail
 
 logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------
+# STATES
+# ------------------------------------------------------------
+
+STATE_AFSLUT_SKADE = "1.0 Skade afsluttet"
+STATE_MANUEL_COMPENSATION = "1.0 Manuel - Vurderes efter arbejdsskadeloven = Ja"
+STATE_MANUEL_UARBEJDSDYGTIGHED = (
+    "1.0 Manuel - Uarbejdsdygtighed er ikke mindre end 1 dag"
+)
+STATE_MANUEL_BEGGE_KRAV = "1.0 Manuel - Begge krav er ikke opfyldt"
+
+MANUEL_STATE_PREFIX = "1.0 Manuel -"
+
+AFSLUTTENDE_STATES = (
+    STATE_AFSLUT_SKADE,
+    STATE_MANUEL_COMPENSATION,
+    STATE_MANUEL_UARBEJDSDYGTIGHED,
+    STATE_MANUEL_BEGGE_KRAV,
+)
 
 
 # ------------------------------------------------------------
@@ -70,6 +84,8 @@ async def behandel_page(
     item: Any,
     session: BrowserSession,
     page: Page,
+    *,
+    api_client: InsubizApiClient,
 ) -> None:
     """Kontrollerer én skade og afslutter eller markerer den manuel."""
     _valider_session_og_side(
@@ -81,8 +97,7 @@ async def behandel_page(
 
     if not isinstance(data, dict):
         raise WorkItemError(
-            "Work item data skal være en dictionary. "
-            f"Modtog: {type(data).__name__}."
+            f"Work item data skal være en dictionary. Modtog: {type(data).__name__}."
         )
 
     box = _hent_box(data=data)
@@ -112,147 +127,119 @@ async def behandel_page(
     print(f"Skade-id: {skade_id}")
     print(f"Skade-nr.: {skade_nr}")
 
-    api_client = create_api_client()
+    # main.py ejer klienten. Modulet opretter eller lukker den ikke.
+    if api_client is None:
+        raise ValueError("Den delte Insubiz API-klient mangler.")
 
-    try:
-        skade = await hent_skade_via_id(
-            api_client=api_client,
-            skade_id=skade_id,
-        )
+    skade = await hent_skade_via_id(
+        api_client=api_client,
+        skade_id=skade_id,
+    )
 
-        compensation_id = _hent_compensation_id(
-            skade=skade,
-        )
+    compensation_id = _hent_compensation_id(
+        skade=skade,
+    )
 
-        accident_duration_text = _hent_accident_duration_text(
-            skade=skade,
-        )
+    accident_duration_text = _hent_accident_duration_text(
+        skade=skade,
+    )
 
-        compensation_opfyldt = (
-            compensation_id
-            == FORVENTET_COMPENSATION_ID
-        )
+    compensation_opfyldt = compensation_id == FORVENTET_COMPENSATION_ID
 
-        accident_duration_opfyldt = (
-            _normaliser_tekst(
-                accident_duration_text
-            )
-            == _normaliser_tekst(
-                FORVENTET_ACCIDENT_DURATION_TEXT
-            )
-        )
+    accident_duration_opfyldt = _normaliser_tekst(
+        accident_duration_text
+    ) == _normaliser_tekst(FORVENTET_ACCIDENT_DURATION_TEXT)
 
-        _print_kontrolresultat(
-            compensation_id=compensation_id,
+    _print_kontrolresultat(
+        compensation_id=compensation_id,
+        compensation_opfyldt=compensation_opfyldt,
+        accident_duration_text=accident_duration_text,
+        accident_duration_opfyldt=accident_duration_opfyldt,
+    )
+
+    if not (compensation_opfyldt and accident_duration_opfyldt):
+        manuel_state, mailtekst = _bestem_manuel_resultat(
             compensation_opfyldt=compensation_opfyldt,
-            accident_duration_text=accident_duration_text,
-            accident_duration_opfyldt=accident_duration_opfyldt,
+            accident_duration_opfyldt=(accident_duration_opfyldt),
         )
 
-        if not (
-            compensation_opfyldt
-            and accident_duration_opfyldt
-        ):
-            manuel_state, mailtekst = _bestem_manuel_resultat(
-                compensation_opfyldt=compensation_opfyldt,
-                accident_duration_opfyldt=(
-                    accident_duration_opfyldt
-                ),
-            )
-
-            _send_mail_om_manuel_behandling(
-                skade_nr=skade_nr,
-                mailtekst=mailtekst,
-            )
-
-            update_item_data(
-                data,
-                item=item,
-                status=STATUS_MANUEL,
-                status_code=STATUS_CODE_MANUEL,
-                state=manuel_state,
-            )
-
-            print(
-                f"BESLUTNING: Skade {skade_id} "
-                "sendes til MANUEL behandling"
-            )
-            print(f"State: {manuel_state}")
-            print(f"Status: {STATUS_MANUEL}")
-            print("Mail: Sendt")
-            print("=" * 80)
-            print()
-
-            logger.info(
-                "Skaden er overdraget til manuel behandling. "
-                "Skade-id: %s. Skade-nr.: %s. State: %s.",
-                skade_id,
-                skade_nr,
-                manuel_state,
-            )
-            return
-
-        print(
-            f"BESLUTNING: Skade {skade_id} afsluttes"
+        _send_mail_om_manuel_behandling(
+            skade_nr=skade_nr,
+            mailtekst=mailtekst,
         )
-        print("Årsag: Begge krav er opfyldt.")
-        print("=" * 80)
-        print()
-
-        await opdater_skade_status_fra_seneste_data(
-            api_client=api_client,
-            skade_id=skade_id,
-            status=SkadeStatus.AFSLUTTET,
-        )
-
-        opdateret_skade = await hent_skade_via_id(
-            api_client=api_client,
-            skade_id=skade_id,
-        )
-
-        status_id = _hent_status_id(
-            skade=opdateret_skade,
-        )
-
-        forventet_status_id = int(
-            SkadeStatus.AFSLUTTET
-        )
-
-        if status_id != forventet_status_id:
-            raise WorkItemError(
-                "Statusændringen blev sendt, men skaden "
-                "har ikke status AFSLUTTET. "
-                f"Skade-id: {skade_id}. "
-                f"Forventede status-id: "
-                f"{forventet_status_id}. "
-                f"Modtog: {status_id!r}."
-            )
 
         update_item_data(
             data,
             item=item,
-            state=STATE_AFSLUT_SKADE,
+            status=STATUS_MANUEL,
+            status_code=STATUS_CODE_MANUEL,
+            state=manuel_state,
         )
 
-        print(
-            "Statuskontrol: OPFYLDT, "
-            f"status-id er {status_id}"
-        )
-        print(
-            f"RESULTAT: Skade {skade_id} er afsluttet"
-        )
+        print(f"BESLUTNING: Skade {skade_id} sendes til MANUEL behandling")
+        print(f"State: {manuel_state}")
+        print(f"Status: {STATUS_MANUEL}")
+        print("Mail: Sendt")
         print("=" * 80)
         print()
 
         logger.info(
-            "Skaden er afsluttet og state er sat. "
-            "Skade-id: %s. Skade-nr.: %s.",
+            "Skaden er overdraget til manuel behandling. "
+            "Skade-id: %s. Skade-nr.: %s. State: %s.",
             skade_id,
             skade_nr,
+            manuel_state,
+        )
+        return
+
+    print(f"BESLUTNING: Skade {skade_id} afsluttes")
+    print("Årsag: Begge krav er opfyldt.")
+    print("=" * 80)
+    print()
+
+    await opdater_skade_status_fra_seneste_data(
+        api_client=api_client,
+        skade_id=skade_id,
+        status=SkadeStatus.AFSLUTTET,
+    )
+
+    opdateret_skade = await hent_skade_via_id(
+        api_client=api_client,
+        skade_id=skade_id,
+    )
+
+    status_id = _hent_status_id(
+        skade=opdateret_skade,
+    )
+
+    forventet_status_id = int(SkadeStatus.AFSLUTTET)
+
+    if status_id != forventet_status_id:
+        raise WorkItemError(
+            "Statusændringen blev sendt, men skaden "
+            "har ikke status AFSLUTTET. "
+            f"Skade-id: {skade_id}. "
+            f"Forventede status-id: "
+            f"{forventet_status_id}. "
+            f"Modtog: {status_id!r}."
         )
 
-    finally:
-        await api_client.close()
+    update_item_data(
+        data,
+        item=item,
+        state=STATE_AFSLUT_SKADE,
+    )
+
+    print(f"Statuskontrol: OPFYLDT, status-id er {status_id}")
+    print(f"RESULTAT: Skade {skade_id} er afsluttet")
+    print("=" * 80)
+    print()
+
+    logger.info(
+        "Skaden er afsluttet og state er sat. Skade-id: %s. Skade-nr.: %s.",
+        skade_id,
+        skade_nr,
+    )
 
 
 # ------------------------------------------------------------
@@ -266,10 +253,7 @@ def _bestem_manuel_resultat(
     accident_duration_opfyldt: bool,
 ) -> tuple[str, str]:
     """Returnerer state og mailtekst til manuel behandling."""
-    if (
-        not compensation_opfyldt
-        and not accident_duration_opfyldt
-    ):
+    if not compensation_opfyldt and not accident_duration_opfyldt:
         return (
             STATE_MANUEL_BEGGE_KRAV,
             MAILTEKST_BEGGE_KRAV,
@@ -292,7 +276,7 @@ def _send_mail_om_manuel_behandling(
     skade_nr: str,
     mailtekst: str,
 ) -> None:
-    """Sender mail via q_outlook_api med værdier fra config.py."""
+    """Sender mail via q_outlook_api med værdier fra configuration.py."""
     mail = {
         "subject": f"{MAIL_EMNE_PREFIX}: {skade_nr}",
         "body": mailtekst,
@@ -308,8 +292,7 @@ def _send_mail_om_manuel_behandling(
         )
     except Exception as error:
         logger.exception(
-            "Mail om manuel behandling kunne ikke sendes. "
-            "Skade-nr.: %s.",
+            "Mail om manuel behandling kunne ikke sendes. Skade-nr.: %s.",
             skade_nr,
         )
 
@@ -320,8 +303,7 @@ def _send_mail_om_manuel_behandling(
         ) from error
 
     logger.info(
-        "Mail om manuel behandling blev sendt. "
-        "Skade-nr.: %s.",
+        "Mail om manuel behandling blev sendt. Skade-nr.: %s.",
         skade_nr,
     )
 
@@ -341,41 +323,15 @@ def _print_kontrolresultat(
     """Udskriver resultatet af de to krav."""
     print("-" * 80)
     print("KRAV 1: EASY compensation")
-    print(
-        "Forventet: easy.compensation.id = "
-        f"{FORVENTET_COMPENSATION_ID}"
-    )
-    print(
-        "Faktisk:   easy.compensation.id = "
-        f"{compensation_id!r}"
-    )
-    print(
-        "Resultat:  "
-        + (
-            "OPFYLDT"
-            if compensation_opfyldt
-            else "IKKE OPFYLDT"
-        )
-    )
+    print(f"Forventet: easy.compensation.id = {FORVENTET_COMPENSATION_ID}")
+    print(f"Faktisk:   easy.compensation.id = {compensation_id!r}")
+    print("Resultat:  " + ("OPFYLDT" if compensation_opfyldt else "IKKE OPFYLDT"))
 
     print("-" * 80)
     print("KRAV 2: Uarbejdsdygtighed")
-    print(
-        "Forventet: "
-        f"{FORVENTET_ACCIDENT_DURATION_TEXT!r}"
-    )
-    print(
-        "Faktisk:   "
-        f"{accident_duration_text!r}"
-    )
-    print(
-        "Resultat:  "
-        + (
-            "OPFYLDT"
-            if accident_duration_opfyldt
-            else "IKKE OPFYLDT"
-        )
-    )
+    print(f"Forventet: {FORVENTET_ACCIDENT_DURATION_TEXT!r}")
+    print(f"Faktisk:   {accident_duration_text!r}")
+    print("Resultat:  " + ("OPFYLDT" if accident_duration_opfyldt else "IKKE OPFYLDT"))
     print("-" * 80)
 
 
@@ -454,10 +410,7 @@ def _hent_skade_id_fra_box(
     )
 
     if skade_id <= 0:
-        raise WorkItemError(
-            "box.Skade_id skal være større end 0. "
-            f"Modtog: {skade_id}."
-        )
+        raise WorkItemError(f"box.Skade_id skal være større end 0. Modtog: {skade_id}.")
 
     return skade_id
 
@@ -479,14 +432,10 @@ def _hent_skade_nr_fra_box(
             f"{list(box.keys())!r}."
         )
 
-    skade_nr = str(
-        box[faktisk_feltnavn]
-    ).strip()
+    skade_nr = str(box[faktisk_feltnavn]).strip()
 
     if not skade_nr:
-        raise WorkItemError(
-            "Work itemets box indeholder et tomt Skade_nr."
-        )
+        raise WorkItemError("Work itemets box indeholder et tomt Skade_nr.")
 
     return skade_nr
 
@@ -496,7 +445,7 @@ def _find_box_feltnavn(
     box: dict[str, Any],
     feltnavne: tuple[str, ...],
 ) -> str | None:
-    """Finder et box-feltnavn via kendte aliaser fra config.py."""
+    """Finder et box-feltnavn via kendte aliaser fra configuration.py."""
     normaliserede_felter = {
         _normaliser_feltnavn(field_name): field_name
         for field_name in box
@@ -504,9 +453,7 @@ def _find_box_feltnavn(
     }
 
     for feltnavn in feltnavne:
-        faktisk_feltnavn = normaliserede_felter.get(
-            _normaliser_feltnavn(feltnavn)
-        )
+        faktisk_feltnavn = normaliserede_felter.get(_normaliser_feltnavn(feltnavn))
 
         if faktisk_feltnavn is not None:
             return faktisk_feltnavn
@@ -524,9 +471,7 @@ def _hent_compensation_id(
     skade: dict[str, Any],
 ) -> int | None:
     """Henter easy.compensation.id fra skaden."""
-    direct_value = skade.get(
-        "easy.compensation.id"
-    )
+    direct_value = skade.get("easy.compensation.id")
 
     if direct_value is not None:
         return _normaliser_heltal(
@@ -541,8 +486,7 @@ def _hent_compensation_id(
 
     if not isinstance(easy, dict):
         raise WorkItemError(
-            "Feltet easy skal være en dictionary. "
-            f"Modtog: {type(easy).__name__}."
+            f"Feltet easy skal være en dictionary. Modtog: {type(easy).__name__}."
         )
 
     compensation = easy.get("compensation")
@@ -550,11 +494,7 @@ def _hent_compensation_id(
     if compensation is None:
         return None
 
-    value = (
-        compensation.get("id")
-        if isinstance(compensation, dict)
-        else compensation
-    )
+    value = compensation.get("id") if isinstance(compensation, dict) else compensation
 
     if value is None:
         return None
@@ -570,35 +510,24 @@ def _hent_accident_duration_text(
     skade: dict[str, Any],
 ) -> str:
     """Henter accidentDuration.text fra skaden."""
-    direct_value = skade.get(
-        "accidentDuration.text"
-    )
+    direct_value = skade.get("accidentDuration.text")
 
     if direct_value is not None:
         return str(direct_value).strip()
 
-    accident_duration = skade.get(
-        "accidentDuration"
-    )
+    accident_duration = skade.get("accidentDuration")
 
     if accident_duration is None:
-        personal_injury = skade.get(
-            "personalInjury"
-        )
+        personal_injury = skade.get("personalInjury")
 
         if personal_injury is not None:
             if not isinstance(
                 personal_injury,
                 dict,
             ):
-                raise WorkItemError(
-                    "Feltet personalInjury skal være "
-                    "en dictionary."
-                )
+                raise WorkItemError("Feltet personalInjury skal være en dictionary.")
 
-            accident_duration = personal_injury.get(
-                "accidentDuration"
-            )
+            accident_duration = personal_injury.get("accidentDuration")
 
     if accident_duration is None:
         return ""
@@ -608,14 +537,10 @@ def _hent_accident_duration_text(
 
     if not isinstance(accident_duration, dict):
         raise WorkItemError(
-            "Feltet accidentDuration skal være "
-            "en dictionary eller tekst."
+            "Feltet accidentDuration skal være en dictionary eller tekst."
         )
 
-    return str(
-        accident_duration.get("text")
-        or ""
-    ).strip()
+    return str(accident_duration.get("text") or "").strip()
 
 
 def _hent_status_id(
@@ -644,11 +569,7 @@ def _hent_status_id(
             field_name="statusId",
         )
 
-    value = (
-        status.get("id")
-        if isinstance(status, dict)
-        else status
-    )
+    value = status.get("id") if isinstance(status, dict) else status
 
     if value is None:
         return None
@@ -671,18 +592,14 @@ def _normaliser_heltal(
 ) -> int:
     """Normaliserer en værdi til et heltal."""
     if isinstance(value, bool):
-        raise WorkItemError(
-            f"{field_name} må ikke være boolsk."
-        )
+        raise WorkItemError(f"{field_name} må ikke være boolsk.")
 
     if isinstance(value, int):
         return value
 
     if isinstance(value, float):
         if not value.is_integer():
-            raise WorkItemError(
-                f"{field_name} indeholder decimaler."
-            )
+            raise WorkItemError(f"{field_name} indeholder decimaler.")
         return int(value)
 
     if isinstance(value, str):
@@ -694,19 +611,14 @@ def _normaliser_heltal(
         if normalized_value.lstrip("-").isdigit():
             return int(normalized_value)
 
-    raise WorkItemError(
-        f"{field_name} havde et ugyldigt format. "
-        f"Modtog: {value!r}."
-    )
+    raise WorkItemError(f"{field_name} havde et ugyldigt format. Modtog: {value!r}.")
 
 
 def _normaliser_tekst(
     value: str,
 ) -> str:
     """Normaliserer tekst til sammenligning."""
-    return " ".join(
-        str(value).strip().split()
-    ).casefold()
+    return " ".join(str(value).strip().split()).casefold()
 
 
 def _normaliser_feltnavn(
@@ -726,9 +638,7 @@ def _normaliser_feltnavn(
             " ",
         )
 
-    return " ".join(
-        normalized_value.split()
-    )
+    return " ".join(normalized_value.split())
 
 
 def _valider_session_og_side(
@@ -738,19 +648,13 @@ def _valider_session_og_side(
 ) -> None:
     """Kontrollerer objekterne fra main.py."""
     if session is None:
-        raise WorkItemError(
-            "Browsersessionen mangler."
-        )
+        raise WorkItemError("Browsersessionen mangler.")
 
     if page is None:
-        raise WorkItemError(
-            "Playwright-siden mangler."
-        )
+        raise WorkItemError("Playwright-siden mangler.")
 
     if page.is_closed():
-        raise WorkItemError(
-            "Playwright-siden er lukket."
-        )
+        raise WorkItemError("Playwright-siden er lukket.")
 
 
 __all__ = [

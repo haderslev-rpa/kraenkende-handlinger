@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 """Fylder Automation Server-køen med relevante skader fra Insubiz.
 
-Alle konfigurerbare inputs importeres fra config.py.
+Alle konfigurerbare inputs importeres fra configuration.py.
 Denne fil læser ikke værdier fra .env eller miljøvariabler.
 
 Work item-data oprettes med følgende domænefelter i box:
@@ -22,11 +20,21 @@ Work item-data oprettes med følgende domænefelter i box:
 Skade_id anvendes som work item-reference.
 """
 
-import logging
-from datetime import datetime, timezone
-from typing import Any, Iterable
+from __future__ import annotations
 
-from config import (
+import logging
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from typing import Any
+
+from q_haderslev_vbo.automation_server.ats_is_item_in_queue import (
+    is_item_in_queue,
+)
+from q_haderslev_vbo.automation_server.ats_update_item_data import (
+    update_item_data,
+)
+
+from configuration import (
     AFSLUTTET_STATUS,
     BOX_SKADE_ID,
     BOX_SKADE_NR,
@@ -50,16 +58,9 @@ from config import (
     STATUS_ID,
     UNDERTYPE_FELTER,
 )
-from q_haderslev_vbo.automation_server.ats_is_item_in_queue import (
-    is_item_in_queue,
-)
-from q_haderslev_vbo.automation_server.ats_update_item_data import (
-    update_item_data,
-)
-from q_insubiz.api_client import create_api_client
+from q_insubiz.api.client import InsubizApiClient
 from q_insubiz.functionality.skader import SKADER_LISTE
 from q_insubiz.utils import normalize_positive_id
-
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +73,7 @@ logger = logging.getLogger(__name__)
 def _normaliser_feltnavn(value: str) -> str:
     """Normaliserer et feltnavn til robust sammenligning."""
     if not isinstance(value, str):
-        raise TypeError(
-            "Feltnavnet skal være tekst. "
-            f"Modtog: {type(value).__name__}."
-        )
+        raise TypeError(f"Feltnavnet skal være tekst. Modtog: {type(value).__name__}.")
 
     normalized_value = value.strip().casefold()
 
@@ -111,8 +109,7 @@ def _normaliser_paakraevet_tekst(
 
     if not isinstance(value, str):
         raise TypeError(
-            f"{normalized_name} skal være tekst. "
-            f"Modtog: {type(value).__name__}."
+            f"{normalized_name} skal være tekst. Modtog: {type(value).__name__}."
         )
 
     normalized_value = value.strip()
@@ -125,7 +122,7 @@ def _normaliser_paakraevet_tekst(
 
 def _utc_timestamp() -> str:
     """Returnerer aktuelt UTC-tidspunkt i ISO-format."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 # --------------------------------------------------
@@ -141,14 +138,11 @@ def _find_feltnavn(
     """Finder det faktiske feltnavn via kendte aliaser."""
     if not isinstance(skade, dict):
         raise TypeError(
-            "skade skal være en dictionary. "
-            f"Modtog: {type(skade).__name__}."
+            f"skade skal være en dictionary. Modtog: {type(skade).__name__}."
         )
 
     if isinstance(feltnavne, (str, bytes)):
-        raise TypeError(
-            "feltnavne skal være en samling af tekstværdier."
-        )
+        raise TypeError("feltnavne skal være en samling af tekstværdier.")
 
     normaliserede_felter = {
         _normaliser_feltnavn(faktisk_feltnavn): faktisk_feltnavn
@@ -158,13 +152,9 @@ def _find_feltnavn(
 
     for feltnavn in feltnavne:
         if not isinstance(feltnavn, str):
-            raise TypeError(
-                "Alle værdier i feltnavne skal være tekst."
-            )
+            raise TypeError("Alle værdier i feltnavne skal være tekst.")
 
-        faktisk_feltnavn = normaliserede_felter.get(
-            _normaliser_feltnavn(feltnavn)
-        )
+        faktisk_feltnavn = normaliserede_felter.get(_normaliser_feltnavn(feltnavn))
 
         if faktisk_feltnavn is not None:
             return faktisk_feltnavn
@@ -245,8 +235,7 @@ def _hent_tekstvaerdi(
     if value is None:
         if paakraevet:
             raise RuntimeError(
-                "Skadelisten indeholder en tom tekstværdi. "
-                f"Felttype: {felttype!r}."
+                f"Skadelisten indeholder en tom tekstværdi. Felttype: {felttype!r}."
             )
 
         return standardvaerdi
@@ -276,8 +265,7 @@ def _hent_tekstvaerdi(
     if not normalized_value:
         if paakraevet:
             raise RuntimeError(
-                "Skadelisten indeholder en tom tekstværdi. "
-                f"Felttype: {felttype!r}."
+                f"Skadelisten indeholder en tom tekstværdi. Felttype: {felttype!r}."
             )
 
         return standardvaerdi
@@ -300,8 +288,7 @@ def _hent_skade_id(*, skade: dict[str, Any]) -> int:
         )
     except (TypeError, ValueError) as error:
         raise RuntimeError(
-            "Skadelistens skade-id er ugyldigt. "
-            f"Modtog: {raw_skade_id!r}."
+            f"Skadelistens skade-id er ugyldigt. Modtog: {raw_skade_id!r}."
         ) from error
 
 
@@ -408,9 +395,7 @@ def _kontroller_data_json(*, data_json: dict[str, Any]) -> None:
     )
 
     manglende_box_felter = [
-        field_name
-        for field_name in forventede_box_felter
-        if field_name not in box
+        field_name for field_name in forventede_box_felter if field_name not in box
     ]
 
     if manglende_box_felter:
@@ -474,6 +459,7 @@ async def populate_queue(
     *,
     workqueue: Any,
     queue_id: int,
+    api_client: InsubizApiClient,
     customer_id: int | None = CUSTOMER_ID,
     customer_segmentation_1: int = CUSTOMER_SEGMENTATION_1,
     customer_segmentation_2: int = CUSTOMER_SEGMENTATION_2,
@@ -494,193 +480,191 @@ async def populate_queue(
         value=queue_id,
     )
 
-    api_client = create_api_client()
+    # main.py ejer klienten. Modulet opretter eller lukker den ikke.
+    if api_client is None:
+        raise ValueError("Den delte Insubiz API-klient mangler.")
 
-    try:
-        skader = await SKADER_LISTE(
-            api_client=api_client,
-            customer_id=customer_id,
-            customer_segmentation_1=customer_segmentation_1,
-            customer_segmentation_2=customer_segmentation_2,
-            claim_group_id=claim_group_id,
-            status_id=status_id,
-            created_year_from=created_year_from,
-            created_year_to=created_year_to,
-            incident_year_from=incident_year_from,
-            incident_year_to=incident_year_to,
-            show_tree_data=show_tree_data,
-            columns=SKADER_LISTE_COLUMNS,
+    skader = await SKADER_LISTE(
+        api_client=api_client,
+        customer_id=customer_id,
+        customer_segmentation_1=customer_segmentation_1,
+        customer_segmentation_2=customer_segmentation_2,
+        claim_group_id=claim_group_id,
+        status_id=status_id,
+        created_year_from=created_year_from,
+        created_year_to=created_year_to,
+        incident_year_from=incident_year_from,
+        incident_year_to=incident_year_to,
+        show_tree_data=show_tree_data,
+        columns=SKADER_LISTE_COLUMNS,
+    )
+
+    if not isinstance(skader, list):
+        raise RuntimeError(
+            "SKADER_LISTE returnerede et uventet format. "
+            f"Modtog: {type(skader).__name__}."
         )
 
-        if not isinstance(skader, list):
-            raise RuntimeError(
-                "SKADER_LISTE returnerede et uventet format. "
-                f"Modtog: {type(skader).__name__}."
-            )
+    logger.info(
+        "Skadelisten blev hentet. Antal: %s.",
+        len(skader),
+    )
 
+    if skader:
         logger.info(
-            "Skadelisten blev hentet. Antal: %s.",
-            len(skader),
+            "Kolonner i skadelisten: %s.",
+            list(skader[0].keys()),
         )
 
-        if skader:
-            logger.info(
-                "Kolonner i skadelisten: %s.",
-                list(skader[0].keys()),
+    antal_tilfoejet = 0
+    antal_dubletter = 0
+    antal_filtreret = 0
+    queue_lookup_end = _utc_timestamp()
+
+    for row_number, skade in enumerate(
+        skader,
+        start=1,
+    ):
+        if not isinstance(skade, dict):
+            raise RuntimeError(
+                "Skadelisten indeholder en ugyldig række. "
+                f"Række: {row_number}. "
+                f"Modtog: {type(skade).__name__}."
             )
 
-        antal_tilfoejet = 0
-        antal_dubletter = 0
-        antal_filtreret = 0
-        queue_lookup_end = _utc_timestamp()
+        skade_id = _hent_skade_id(
+            skade=skade,
+        )
 
-        for row_number, skade in enumerate(
-            skader,
-            start=1,
+        skade_nr = _hent_skade_nr(
+            skade=skade,
+        )
+
+        undertype = _hent_tekstvaerdi(
+            skade=skade,
+            feltnavne=UNDERTYPE_FELTER,
+            felttype="undertype",
+        )
+
+        status = _hent_tekstvaerdi(
+            skade=skade,
+            feltnavne=STATUS_FELTER,
+            felttype="status",
+        )
+
+        if _tekster_er_ens(
+            status,
+            AFSLUTTET_STATUS,
         ):
-            if not isinstance(skade, dict):
-                raise RuntimeError(
-                    "Skadelisten indeholder en ugyldig række. "
-                    f"Række: {row_number}. "
-                    f"Modtog: {type(skade).__name__}."
-                )
+            antal_filtreret += 1
+            continue
 
-            skade_id = _hent_skade_id(
-                skade=skade,
-            )
+        if not _tekster_er_ens(
+            undertype,
+            KRAENKENDE_HANDLING_UNDERTYPE,
+        ):
+            antal_filtreret += 1
+            continue
 
-            skade_nr = _hent_skade_nr(
-                skade=skade,
-            )
+        raw_item = _opret_box_data(
+            skade_id=skade_id,
+            skade_nr=skade_nr,
+            undertype=undertype,
+            status=status,
+        )
 
-            undertype = _hent_tekstvaerdi(
-                skade=skade,
-                feltnavne=UNDERTYPE_FELTER,
-                felttype="undertype",
-            )
+        data_json = _opret_data_json()
 
-            status = _hent_tekstvaerdi(
-                skade=skade,
-                feltnavne=STATUS_FELTER,
-                felttype="status",
-            )
+        update_item_data(
+            data_json,
+            box_updates=raw_item,
+            update=False,
+        )
 
-            if _tekster_er_ens(
-                status,
-                AFSLUTTET_STATUS,
-            ):
-                antal_filtreret += 1
-                continue
+        _fjern_domaenefelter_fra_roden(
+            data_json=data_json,
+        )
 
-            if not _tekster_er_ens(
-                undertype,
-                KRAENKENDE_HANDLING_UNDERTYPE,
-            ):
-                antal_filtreret += 1
-                continue
+        item_reference = _hent_item_reference(
+            data_json=data_json,
+        )
 
-            raw_item = _opret_box_data(
-                skade_id=skade_id,
-                skade_nr=skade_nr,
-                undertype=undertype,
-                status=status,
-            )
-
-            data_json = _opret_data_json()
-
-            update_item_data(
-                data_json,
-                box_updates=raw_item,
-                update=False,
-            )
-
-            _fjern_domaenefelter_fra_roden(
-                data_json=data_json,
-            )
-
-            item_reference = _hent_item_reference(
-                data_json=data_json,
-            )
-
-            if is_item_in_queue(
-                queue_id=normalized_queue_id,
-                item_reference=item_reference,
-                new=True,
-                in_progress=True,
-                completed=True,
-                pending_user_action=True,
-                start_datetime=QUEUE_LOOKBACK_START,
-                end_datetime=queue_lookup_end,
-                updated_at=False,
-            ):
-                antal_dubletter += 1
-
-                logger.info(
-                    "Springer eksisterende item over. "
-                    "Række: %s. Skade-id: %s. "
-                    "Skadenummer: %s. Reference: %s.",
-                    row_number,
-                    skade_id,
-                    skade_nr,
-                    item_reference,
-                )
-
-                print(
-                    "Springer over: Item med reference "
-                    f"{item_reference!r} findes allerede. "
-                    f"Skadenummer: {skade_nr!r}."
-                )
-                continue
-
-            workqueue.add_item(
-                data=data_json,
-                reference=item_reference,
-            )
-
-            antal_tilfoejet += 1
+        if is_item_in_queue(
+            queue_id=normalized_queue_id,
+            item_reference=item_reference,
+            new=True,
+            in_progress=True,
+            completed=True,
+            pending_user_action=True,
+            start_datetime=QUEUE_LOOKBACK_START,
+            end_datetime=queue_lookup_end,
+            updated_at=False,
+        ):
+            antal_dubletter += 1
 
             logger.info(
-                "Skade blev tilføjet. Række: %s. "
-                "Skade-id: %s. Skadenummer: %s. "
-                "Reference: %s. Undertype: %s. Status: %s.",
+                "Springer eksisterende item over. "
+                "Række: %s. Skade-id: %s. "
+                "Skadenummer: %s. Reference: %s.",
                 row_number,
                 skade_id,
                 skade_nr,
                 item_reference,
-                undertype,
-                status,
             )
 
             print(
-                "Tilføjet til kø: "
-                f"Reference {item_reference!r}, "
-                f"skadenummer {skade_nr!r}, "
-                f"undertype {undertype!r}, "
-                f"status {status!r}."
+                "Springer over: Item med reference "
+                f"{item_reference!r} findes allerede. "
+                f"Skadenummer: {skade_nr!r}."
             )
+            continue
 
-        logger.info(
-            "Køoprettelsen er afsluttet. "
-            "Hentet: %s. Tilføjet: %s. "
-            "Dubletter: %s. Filtreret: %s.",
-            len(skader),
-            antal_tilfoejet,
-            antal_dubletter,
-            antal_filtreret,
+        workqueue.add_item(
+            data=data_json,
+            reference=item_reference,
         )
 
-        print()
-        print("=" * 80)
-        print("KØOPRETTELSE AFSLUTTET")
-        print("=" * 80)
-        print(f"Antal hentet: {len(skader)}")
-        print(f"Antal tilføjet: {antal_tilfoejet}")
-        print(f"Antal dubletter: {antal_dubletter}")
-        print(f"Antal filtreret fra: {antal_filtreret}")
-        print("=" * 80)
+        antal_tilfoejet += 1
 
-    finally:
-        await api_client.close()
+        logger.info(
+            "Skade blev tilføjet. Række: %s. "
+            "Skade-id: %s. Skadenummer: %s. "
+            "Reference: %s. Undertype: %s. Status: %s.",
+            row_number,
+            skade_id,
+            skade_nr,
+            item_reference,
+            undertype,
+            status,
+        )
+
+        print(
+            "Tilføjet til kø: "
+            f"Reference {item_reference!r}, "
+            f"skadenummer {skade_nr!r}, "
+            f"undertype {undertype!r}, "
+            f"status {status!r}."
+        )
+
+    logger.info(
+        "Køoprettelsen er afsluttet. "
+        "Hentet: %s. Tilføjet: %s. "
+        "Dubletter: %s. Filtreret: %s.",
+        len(skader),
+        antal_tilfoejet,
+        antal_dubletter,
+        antal_filtreret,
+    )
+
+    print()
+    print("=" * 80)
+    print("KØOPRETTELSE AFSLUTTET")
+    print("=" * 80)
+    print(f"Antal hentet: {len(skader)}")
+    print(f"Antal tilføjet: {antal_tilfoejet}")
+    print(f"Antal dubletter: {antal_dubletter}")
+    print(f"Antal filtreret fra: {antal_filtreret}")
+    print("=" * 80)
 
 
 __all__ = [
