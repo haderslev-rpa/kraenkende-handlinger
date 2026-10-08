@@ -725,113 +725,68 @@ def _faerdiggoer_item(*, item: Any, data: Any) -> None:
 # PROCESS-MODE
 # ------------------------------------------------------------
 
-async def process_workqueue(
-    *,
-    workqueue: Workqueue,
-    debug: bool,
-) -> None:
-    """Behandler køens items med en delt Insubiz-session."""
+async def process_workqueue(*, workqueue: Workqueue, debug: bool) -> None:
+    """Behandler køens items og lukker browseren sikkert."""
     _valider_workqueue(workqueue)
-
-    headless = _hent_headless(
-        debug=debug,
-        queue_mode=False,
-    )
-
-    logger.info(
-        "PROCESS | starter | queue_id=%s | headless=%s | debug=%s",
-        _hent_queue_id(),
-        headless,
-        debug,
-    )
-
+    headless = _hent_headless(debug=debug, queue_mode=False)
+    logger.info("PROCESS | starter | queue_id=%s | headless=%s | debug=%s", _hent_queue_id(), headless, debug)
     session: BrowserSession | None = None
     api_client: InsubizApiClient | None = None
     page: Page | None = None
-
     try:
-        session, page, api_client = await _opret_browser_session(
-            headless=headless,
-            debug=debug,
-        )
-
+        session, page, api_client = await _opret_browser_session(headless=headless, debug=debug)
         for item in workqueue:
-            # En soft fejl lukker sessionen. Næste item får nyt login.
             if session is None:
-                logger.info(
-                    "PROCESS | opretter ny session efter tidligere itemfejl"
-                )
-
-                session, page, api_client = await _opret_browser_session(
-                    headless=headless,
-                    debug=debug,
-                )
-
+                logger.info("PROCESS | opretter ny session efter itemfejl")
+                session, page, api_client = await _opret_browser_session(headless=headless, debug=debug)
             with item:
                 trin = "behandling"
-
                 try:
-                    logger.info(
-                        "ITEM | behandling starter | reference=%s",
-                        item.reference,
-                    )
-
-                    await behandel_page(
-                        item=item,
-                        session=session,
-                        page=page,
-                        api_client=api_client,
-                    )
-
-                    logger.info(
-                        "ITEM | behandling returnerede uden fejl "
-                        "| reference=%s",
-                        item.reference,
-                    )
-
+                    logger.info("ITEM | behandling starter | reference=%s", item.reference)
+                    await behandel_page(item=item, session=session, page=page, api_client=api_client)
+                    logger.info("ITEM | behandling returnerede uden fejl | reference=%s", item.reference)
                     trin = "afslutning af work item"
-
-                    _faerdiggoer_item(
-                        item=item,
-                        data=item.data,
-                    )
-
+                    _faerdiggoer_item(item=item, data=item.data)
                 except WorkItemError as error:
-                    logger.error(
-                        "ITEM | soft fejl | trin=%s "
-                        "| reference=%s | fejl=%s",
-                        trin,
-                        item.reference,
-                        error,
-                    )
-
-                    await _tag_screenshot_ved_fejl(
-                        session=session,
-                        error=error,
-                    )
-
+                    logger.error("ITEM | soft fejl | trin=%s | reference=%s | fejl=%s", trin, item.reference, error)
+                    await _tag_screenshot_ved_fejl(session=session, error=error)
                     item.fail(str(error))
-
-                    await _luk_browser_session(
-                        session=session,
-                        api_client=api_client,
-                    )
-
+                    await _luk_browser_session(session=session, api_client=api_client)
                     session = None
                     page = None
                     api_client = None
-
                 except Exception as error:
-                    logger.exception(
-                        "ITEM | hard fejl | trin=%s "
-                        "| reference=%s | fejltype=%s",
-                        trin,
-                        item.reference,
-                        type(error).__name__,
-                    )
+                    logger.exception("ITEM | hard fejl | trin=%s | reference=%s | fejltype=%s", trin, item.reference, type(error).__name__)
+                    await _tag_screenshot_ved_fejl(session=session, error=error)
+                    raise
+    finally:
+        await _luk_browser_session(session=session, api_client=api_client)
+    logger.info("PROCESS | afsluttet uden hard fejl")
 
-                    await _tag_screenshot_ved_fejl(
-                        session=session,
-                        error=error,
-                    )
-                   
+
+def main() -> None:
+    """Initialiserer ATS og starter producer eller worker."""
+    debug = _get_debug_mode()
+    queue_mode = _get_queue_mode()
+    logger.info("START | queue_mode=%s | debug=%s", queue_mode, debug)
+    _log_koerselsmiljoe()
+    try:
+        queue_id = _hent_queue_id()
+        automation_server = _opret_automation_server()
+        workqueue = _opret_workqueue(automation_server=automation_server, queue_id=queue_id)
+        if queue_mode:
+            asyncio.run(_run_queue_mode(workqueue=workqueue, debug=debug))
+        else:
+            asyncio.run(process_workqueue(workqueue=workqueue, debug=debug))
+    except KeyboardInterrupt:
+        logger.warning("SLUT | kørslen blev afbrudt manuelt")
+        raise
+    except Exception:
+        logger.exception("SLUT | kørslen fejlede. Se første FEJL ovenfor.")
+        raise
+    logger.info("SLUT | kørslen afsluttede uden hard fejl")
+
+
+if __name__ == "__main__":
+    main()
+    
