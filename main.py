@@ -17,40 +17,69 @@ Diagnostikken ændrer ikke miljø eller browserinstallation.
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import inspect
-import json
-import logging
 import os
-import re
-import socket
-import sys
-from importlib.metadata import distribution
-from pathlib import Path
-from typing import Any
 
-from automation_server_client import (
+import configuration
+
+
+# PLAYWRIGHT-MILJØ
+# Skal sættes, før Playwright eller moduler, som bruger Playwright, importeres.
+
+_playwright_skip_browser_gc = configuration.PLAYWRIGHT_SKIP_BROWSER_GC
+
+if not isinstance(_playwright_skip_browser_gc, bool):
+    raise TypeError(
+        "configuration.PLAYWRIGHT_SKIP_BROWSER_GC skal være True eller False."
+    )
+
+os.environ["PLAYWRIGHT_SKIP_BROWSER_GC"] = (
+    "1" if _playwright_skip_browser_gc else "0"
+)
+
+
+# STANDARDLIBRARY
+
+import asyncio  # noqa: E402
+import hashlib  # noqa: E402
+import inspect  # noqa: E402
+import json  # noqa: E402
+import logging  # noqa: E402
+import re  # noqa: E402
+import socket  # noqa: E402
+import sys  # noqa: E402
+from importlib.metadata import distribution  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import Any  # noqa: E402
+
+
+# TREDJEPARTS- OG FÆLLESIMPORTS
+# Playwright-relaterede imports skal blive efter miljøopsætningen ovenfor.
+
+from automation_server_client import (  # noqa: E402
     AutomationServer,
     WorkItemError,
     WorkItemStatus,
     Workqueue,
 )
-from playwright.async_api import Page
-from q_haderslev_vbo.automation_server.ats_update_item_data import (
+from playwright.async_api import Page  # noqa: E402
+from q_haderslev_vbo.automation_server.ats_update_item_data import (  # noqa: E402
     update_item_data,
 )
-from q_haderslev_vbo.playwright.browser_session import BrowserSession
-from q_insubiz.api.client import InsubizApiClient
-from q_insubiz.api_client import create_api_client_from_context
-from q_insubiz.functionality.launch import launch_insubiz
-from q_insubiz.utils import normalize_positive_id
-
-import configuration
-from behandel import MANUEL_STATE_PREFIX, behandel_page
-from populate_queue import populate_queue
+from q_haderslev_vbo.playwright.browser_session import (  # noqa: E402
+    BrowserSession,
+)
+from q_insubiz.api.client import InsubizApiClient  # noqa: E402
+from q_insubiz.api_client import create_api_client_from_context  # noqa: E402
+from q_insubiz.functionality.launch import launch_insubiz  # noqa: E402
+from q_insubiz.utils import normalize_positive_id  # noqa: E402
 
 
+# LOKALE PROCESMODULER
+# Disse placeres også efter Playwright-miljøopsætningen, da de kan importere
+# Playwright eller BrowserSession indirekte.
+
+from behandel import MANUEL_STATE_PREFIX, behandel_page  # noqa: E402
+from populate_queue import populate_queue  # noqa: E402
 # ------------------------------------------------------------
 # LOGGING
 # ------------------------------------------------------------
@@ -484,6 +513,7 @@ async def _opret_browser_session(
         session = BrowserSession(
             headless=headless,
             debug=debug,
+            use_regular_chromium=configuration.USE_REGULAR_CHROMIUM,
         )
 
         trin = "browserstart"

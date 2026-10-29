@@ -24,6 +24,10 @@ HEADLESS: bool = True
 DEBUG_HEADLESS: bool = False
 QUEUE_HEADLESS: bool = True
 
+# configuration.py
+
+PLAYWRIGHT_SKIP_BROWSER_GC: bool = True
+USE_REGULAR_CHROMIUM: bool = True
 # Bevarer originalens adfaerd: --queue sletter alle NEW-items foer fyldning.
 # Saet False for at bevare eksisterende NEW-items.
 CLEAR_NEW_ITEMS_BEFORE_POPULATE: bool = True
